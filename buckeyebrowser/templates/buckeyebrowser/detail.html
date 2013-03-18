@@ -1,0 +1,101 @@
+{% extends "buckeyebrowser/index.html" %}
+
+{% block content %}
+
+<img src="{{ MEDIA_URL }}Temp/Buckeye-{{output.TokenID}}-waveform.png"/>
+<img src="{{ MEDIA_URL }}Temp/Buckeye-{{output.TokenID}}-spectro.png"/>
+<audio controls="controls">
+  <source src="{{ MEDIA_URL }}Temp/Buckeye-{{output.TokenID}}.mp3" type="audio/mpeg">
+Your browser does not support this audio format.
+</audio>
+<h2>Redo formant tracking</h2>
+<h3>Current settings</h3>
+Ceiling: {{ output.Ceiling }} <br>
+Number of Formants: {{ output.NFormants }} <br>
+<a href="{{ MEDIA_URL }}Temp/Buckeye-{{output.TokenID}}.wav">Sound file for manual analysis</a>
+<form method="POST" action="">{% csrf_token %}
+<table>
+    {{ form.as_table }}
+</table>
+    <input type="submit" name="submit" value="Submit" id="submit">
+</form>
+
+{% if user.is_superuser %}
+<a href="{% url 'admin:buckeyebrowser_wordtoken_change' output.TokenID %}">Change word token details</a>
+{% endif %}
+<table>
+<thead><tr>
+<th>Preceding context</th>
+<th>Word</th>
+<th>Following context</th>
+
+</tr></thead>
+<tbody>
+<tr>
+<td>
+{% for t in output.Preceding %}
+	<a href="{% url 'buckeyebrowser.views.token_details' t.pk %}">{{ t }}</a><span> </span>
+{% endfor %}
+</td>
+<td>
+{{output.Word}}
+</td>
+<td>
+{% for t in output.Following %}
+	<a href="{% url 'buckeyebrowser.views.token_details' t.pk %}">{{ t }}</a><span> </span>
+{% endfor %}
+</td>
+</tr>
+
+<tr>
+<td>
+<table>
+<tbody>
+{% for key, value in output.Contextual.items %}
+	{% if 'Previous' in key %}
+		<tr>
+			<th>{{ key }}</th>
+			<td>{{ value }}</td>
+		</tr>
+	{% endif %}
+{% endfor %}
+</tbody>
+</table>
+</td>
+<td></td>
+<td>
+<table>
+<tbody>
+{% for key, value in output.Contextual.items %}
+	{% if 'Following' in key %}
+		<tr>
+			<th>{{ key }}</th>
+			<td>{{ value }}</td>
+		</tr>
+	{% endif %}
+{% endfor %}
+</tbody>
+</table></td>
+</tr>
+</tbody>
+</table>
+
+{% for key, line in output.items %}
+	{% if key != "Contextual" %}
+	<h3>{{ key }} details</h3>
+
+	<table>
+	<tbody>
+	{% for linekey, value in line.items %}
+		<tr>
+			<th>{{ linekey }}</th>
+			<td>{{ value }}</td>
+		</tr>
+
+	{% endfor %}
+	</tbody>
+	</table>
+	{% endif %}
+{% endfor %}
+
+{% endblock content %}

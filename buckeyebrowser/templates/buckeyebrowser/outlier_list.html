@@ -1,0 +1,44 @@
+{% extends "buckeyebrowser/index.html" %}
+
+
+{% block content %}
+<table>
+<thead>
+<th>Token</th>
+<th>Word</th>
+<th>Speaker</th>
+<th>Vowel</th>
+<th>Formants</th>
+<th>Outlier reason</th>
+</thead>
+<tbody>
+{% for c in outliers %}
+	<tr>
+	<td><a href="{% url 'buckeyebrowser.views.token_details' c.Token %}">Get details</a></td>
+	<td>{{ c.Word }}</td>
+	<td>{{ c.Speaker }}
+   </td>
+	<td>{{ c.Vowel }}</td>
+	<td>{{ c.F1 }}, {{ c.F2 }}</td>
+	<td>{{ c.OutlierReason }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<div class="pagination">
+    <span class="step-links">
+        {% if outliers.has_previous %}
+            <a href="?page={{ outliers.previous_page_number }}">previous</a>
+        {% endif %}
+
+        <span class="current">
+            Page {{ outliers.number }} of {{ outliers.paginator.num_pages }}.
+        </span>
+
+        {% if outliers.has_next %}
+            <a href="?page={{ outliers.next_page_number }}">next</a>
+        {% endif %}
+    </span>
+</div>
+{% endblock content %}

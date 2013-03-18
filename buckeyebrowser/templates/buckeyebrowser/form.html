@@ -1,0 +1,12 @@
+{% extends "buckeyebrowser/index.html" %}
+
+{% block content %}
+ 
+<form method="POST" action="">{% csrf_token %}
+<table>
+    {{ form.as_table }}
+</table>
+    <input type="submit" name="submit" value="Submit" id="submit">
+</form>
+ 
+{% endblock content %}

@@ -1,0 +1,16 @@
+{% extends "index.html" %}
+
+{% block title %}{{block.super}} - Buckeye browser{% endblock %}
+
+{% block menu %}{{ block.super }}
+<ul>
+
+<li><a href="{% url 'buckeyebrowser.views.index' %}">Index</a> </li>
+<span class="sep">|</span>
+<li><a href="{% url 'buckeyebrowser.views.reset' %}">Reset</a></li>
+<span class="sep">|</span>
+<li><a href="{% url 'buckeyebrowser.views.basic' %}">Analyze</a></li>
+<span class="sep">|</span>
+<li><a href="{% url 'buckeyebrowser.views.outliers' 'analysis.txt' %}">Outliers</a></li>
+
+</ul>{% endblock %}
