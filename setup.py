@@ -9,14 +9,14 @@ template_patterns = [
 
 setup(
     name='django-buckeye-corpus',
-    version='0.3.26',
+    version='0.3.54',
     author='Michael McAuliffe',
     author_email='michael.e.mcauliffe@gmail.com',
     url='http://pypi.python.org/pypi/django-buckeye-corpus/',
     license='LICENSE.txt',
     description='',
     long_description=open('README.md').read(),
-    install_requires=['django',
+    install_requires=['Django',
                     'django-celery',
                     'python-praat-scripts',
                     'pillow',

@@ -16,7 +16,7 @@ import caching.base
 # Create your models here.
 
 
-from linghelper import DTW,getSemanticRelatedness
+from linghelper import DTW,SemanticPredictabilityAnalyzer,perl_get_semantic_predictability
 from praatinterface import PraatLoader
 
 if 'phonostats' in settings.INSTALLED_APPS:
@@ -33,7 +33,9 @@ else:
     from .helper import pg_speaker_center as SPEAKER_SQL
 
 from .helper import fetch_buckeye_resource,reorganize
-from .managers import BulkManager
+
+
+SEM_PRED = SemanticPredictabilityAnalyzer(ngram=True,use_idf=True)
 
 
 GOOD_WORDS = ['back', 'bad', 'badge', 'bag', 'ball', 'bar', 'bare', 'base', 'bash', 'bass', 'bat', 'bath', 'beach', 'bean', 'bear', 'beat',
@@ -71,17 +73,34 @@ GOOD_WORDS = ['back', 'bad', 'badge', 'bag', 'ball', 'bar', 'bare', 'base', 'bas
                  'whole', 'wick', 'wide', 'wife', 'win', 'wine', 'wing', 'wise', 'wish', 'woke', 'womb', 'wood', 'word', 'wore', 'work',
                  'worse', 'wreck', 'wright', 'write', 'wrong', 'wrote', 'wrought', 'year', 'yell', 'young', 'youth', 'zip']
     #Remove: pull, full, bull, real
+BAD_WORDS = ['okay','kinda','w','even','only','really','maybe','being','having','awhile','also','was',
+            'is','are','am','a','i','the','and','to','that','of','you','like','in','they','but','so',
+            'just','have','my','for','know','think','do','on','or','mean','not','be','with','because',
+            'well','what','all','if','this','out','at','get','about','them','go','when','me','she',
+            'one','then','had','as','up','would','right','lot','no','more','got','were','can','some','things',
+            'said','now','something','from','your','him','say','been','where','gonna','see','their','thing',
+            'how','here','her','much','kind','two','an','too','did','his','could','has','those','doing',
+            'who','these','our','than','into','everything','which','any','anything','three','never','by',
+            'why','five','should','off','through','will','whatever','wanna','us','every','done','guess','sure',
+            'does','four','might','ten','hum','six','once','either','eight','both','ah','o','d','myself','u',
+            'ones','seven','huh','s','nine','few','thousand','anybody','somebody','everybody','hafta','someone',
+            'yep','hey','anymore','kinda','seventy','yet','against','anyway','forty','ninety','wow','gotta',
+            'such','somewhere','may','bush','gore','there','very','back','ever','q','x','ex','yes','ted',
+            'mike','Adam','whatsoever','whatnot','wadi','ups','twos','twenty-one']
 MONOPHTHONGS = ['aa','ae','eh','ey','ih','iy','ow','uh','uw']
 
-class WTManager(BulkManager):
-    tbl_name = "buckeyebrowser_wordtoken"
-    cols = ['id','Begin','End','WordType_id','Category_id','Dialog_id','DialogPart']
-
-class STManager(BulkManager):
-    tbl_name = "buckeyebrowser_segmenttoken"
-    cols = ['id','WordToken_id','SegmentType_id','Begin','End']
-
 class Speaker(caching.base.CachingMixin,models.Model):
+    """
+    This is the class for speakers in the Buckeye Corpus.
+
+    Speaker-specific traits such as Gender and Age are supplied by the
+    corpus manual, and default acoustic parameters can be set (though
+    word tokens can override acoustic parameters).
+
+    Speaker specific traits can be calculated over all spoken words, such
+    as average speaking rate, centers of the vowel space, and average
+    formant frequencies for all vowels.
+    """
     Number = models.CharField(max_length=3)
     Gender = models.CharField(max_length=10)
     Age = models.CharField(max_length=10)
@@ -96,42 +115,71 @@ class Speaker(caching.base.CachingMixin,models.Model):
     def __unicode__(self):
         return u'%s' % (self.Number,)
 
-    def getAHCenter(self):
+    def get_AH_center(self):
+        """
+        This mehod allows the calculation of the average AH production
+        to serve as the center of the vowel space, as in Gahl et al.
+        (2012).
+        """
         if self.F1center is not None and self.F2center is not None:
             return (self.F1center,self.F2center)
         qs = WordToken.objects.filter(WordType__CVSkel='CVC').filter(WordType__StressVowel='ah').filter(Dialog__Speaker__pk=self.pk)
-        totF1 = filter(lambda x: x is not None,[q.getStrF1() for q in qs])
-        totF2 = filter(lambda x: x is not None,[q.getStrF2() for q in qs])
+        totF1 = filter(lambda x: x is not None,[q.get_stress_F1() for q in qs])
+        totF2 = filter(lambda x: x is not None,[q.get_stress_F2() for q in qs])
         self.F1center = sum(totF1)/float(len(qs))
         self.F2center = sum(totF2)/float(len(qs))
         self.save()
         return (self.F1center,self.F2center)
 
-    def getCenter(self):
+    def get_center(self):
+        """
+        Gets the center of the vowel space using custom SQL to get the
+        average formant frequencies per vowel, and average them all
+        together to get a single center point for the speaker.
+        """
         from django.db import connection
         cursor = connection.cursor()
         cursor.execute(SPEAKER_SQL,[self.pk])
         center = cursor.fetchone()
         return (center[0],center[1])
 
-    def getAvgSpeakingRate(self):
+    def get_avg_speaking_rate(self):
+        """
+        Calculate the average speaking rate over all spoken words.
+
+        Speaking rate is found by dividing the total number of syllables
+        spoken by the total duration of words spoken to give a syllables
+        per second measure.
+        """
         if self.AvgSpeakingRate is not None:
             return self.AvgSpeakingRate
         words = WordToken.objects.filter(Dialog__Speaker=self).filter(Category__CategoryType__in = ['Content','Function','Function_Content','Function_Function'])
-        dur = sum([x.getDuration() for x in words])
-        sylls = sum([x.isSyllabic() for y in words for x in y.SR.all() if x.isSyllabic()])
+        dur = sum([x.get_duration() for x in words])
+        sylls = sum([x.get_syllable_count() for x in words])
         self.AvgSpeakingRate = float(sylls)/float(dur)
         self.save()
         return self.AvgSpeakingRate
 
     def create_dialogs(self):
+        """
+        Find and create all dialogs for a speaker from the Buckeye
+        Corpus materials
+        """
         files= os.listdir(fetch_buckeye_resource("Speakers/"+str(s)))
         dialogs = sorted(set([ f[3:5] for f in files]))
         Dialog.objects.bulk_create([ Dialog(Speaker=self,Number=d) for d in dialogs])
 
     def analyze(self,form):
+        """
+        Omnibus method for acoustically analyzing a speaker's speech.
+
+        This method needs to be generalized more.
+        """
         words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker')
-        words = words.filter(WordType__Label__regex = '^[^{<]').filter(Dialog__Speaker=self)
+        words = words.filter(WordType__Label__regex = r'^[^{<]').filter(Dialog__Speaker=self)
+        #words = words.exclude(WordType__CVSkel__regex = r'^C*VC*$')
+        words = words.exclude(WordType__Label__regex = r"[']")
+        words = words.exclude(WordType__Label__in = BAD_WORDS)
         #words = words.filter(WordType__CVSkel='CVC')
         #words = words.filter(WordType__Label__in = GOOD_WORDS)
         #words = words.filter(WordType__StressVowel__in = MONOPHTHONGS)
@@ -140,11 +188,11 @@ class Speaker(caching.base.CachingMixin,models.Model):
         print("\n")
         print(len(words))
         for w in words:
-            if settings.DEBUG:
-                print(w.pk)
-            if not w.WordType.isAcceptable():
+            #if settings.DEBUG:
+            #    print(w.pk)
+            if not w.WordType.is_acceptable():
                 continue
-            if not w.isAcceptable():
+            if not w.is_acceptable():
                 continue
             if str(w.Dialog) == 's2003' or str(w.Dialog) =='s4001':
                 continue
@@ -152,8 +200,8 @@ class Speaker(caching.base.CachingMixin,models.Model):
             if out is None:
                 continue
             allout.extend(out)
-            if settings.DEBUG:
-                print allout[-1]
+            #if settings.DEBUG:
+            #    print allout[-1]
         return allout
 
     def load_dialogs(self):
@@ -162,12 +210,19 @@ class Speaker(caching.base.CachingMixin,models.Model):
             d.load_in()
 
     def get_path(self):
+        """
+        Get absolute file path to a speaker's resources.
+        """
         return fetch_buckeye_resource("Speakers/"+unicode(self))
 
 
 
 
 class Dialog(caching.base.CachingMixin,models.Model):
+    """
+    Model that allows for grouping words according the specific place
+    they were spoken in
+    """
     Speaker = models.ForeignKey(Speaker)
     Number = models.CharField(max_length=10)
 
@@ -177,11 +232,19 @@ class Dialog(caching.base.CachingMixin,models.Model):
         return u'%s%s' % (self.Speaker,self.Number)
 
     def get_word_files(self):
+        """
+        Load the .words files associated with the dialog (most dialogs
+        are multipart due to the size of their associated .wav files).
+        """
         files = os.listdir(self.Speaker.get_path())
         word_files = [f for f in files if f[:5] == str(d) and re.search("\.words$",f) is not None]
         return word_files
 
     def load_in(self):
+        """
+        Load in all information for a dialog from the Buckeye Corpus
+        materials.
+        """
         wf = self.get_word_files()
         for f in wf:
             name = re.sub(".words","",f)
@@ -192,19 +255,19 @@ class Dialog(caching.base.CachingMixin,models.Model):
             w = None
             if w is None and len(wordTypes) != 0:
                 for wType in wordTypes:
-                    if wType.isWord() and wType.getUR() == word['UR']:
+                    if wType.is_word() and wType.get_UR() == word['UR']:
                         w = wType
                         break
-                    elif not wType.isWord():
+                    elif not wType.is_word():
                         w = wType
             if w is None:
                 w = WordType.objects.create(Label=word['Word'],Count=0)
-                if w.isWord():
+                if w.is_word():
                     uls = []
                     cv = ''
                     for i in range(len(ur)):
                         sType = SegmentType.objects.get(Label=ur[i])
-                        if sType.isVowel():
+                        if sType.is_vowel():
                             cv += 'V'
                         else:
                             cv += 'C'
@@ -216,7 +279,7 @@ class Dialog(caching.base.CachingMixin,models.Model):
                     w.save()
                     Underlying.objects.bulk_create(uls)
             wt =WordToken.objects.create(Begin=word['Begin'],End=word['End'],WordType=w,Category=cat,Dialog=self,DialogPart=name[-1])
-            if w.isWord():
+            if w.is_word():
                 sts = []
                 for s in word['phonerange']:
                     sType = SegmentType.objects.get(Label=s['Label'])
@@ -226,6 +289,9 @@ class Dialog(caching.base.CachingMixin,models.Model):
 
 
 class SegmentType(caching.base.CachingMixin,models.Model):
+    """
+    Model for capturing phonological information about segments.
+    """
     Label = models.CharField(max_length=10)
     Syllabic = models.BooleanField()
     Obstruent = models.BooleanField()
@@ -234,27 +300,37 @@ class SegmentType(caching.base.CachingMixin,models.Model):
 
     objects = caching.base.CachingManager()
 
-    def isSyllabic(self):
+    def is_syllabic(self):
         return self.Syllabic
 
-    def isNasal(self):
+    def is_nasal(self):
         return self.Nasal
 
-    def isObs(self):
+    def is_obstruent(self):
         return self.Obstruent
 
-    def isVowel(self):
+    def is_vowel(self):
         return self.Vowel
 
     def __unicode__(self):
         return u'%s' % (self.Label,)
 
-    def getAverageDur(self):
+    def get_average_dur(self):
+        """
+        Calculates the average duration of a given segment across all
+        instances in the corpus.
+        """
         qs = SegmentToken.objects.filter(SegmentType=self)
         durs = [x.End - x.Begin for x in qs]
         return sum(durs)/float(len(durs))
 
 class Underlying(caching.base.CachingMixin,models.Model):
+    """
+    Many-to-many relation between words and their underlying/canonical
+    segments.
+
+    Contains ordering information and stress values for vowels
+    """
     WordType = models.ForeignKey('WordType')
     SegmentType = models.ForeignKey(SegmentType)
     Ordering = models.IntegerField()
@@ -262,7 +338,11 @@ class Underlying(caching.base.CachingMixin,models.Model):
 
     objects = caching.base.CachingManager()
 
-    def getStrTrans(self):
+    def get_stress_trans(self):
+        """
+        Convert the transcription to include stress notation
+        (if applicable).
+        """
         if self.Stressed is None:
             return str(self.SegmentType).upper()
         return str(self.SegmentType).upper()+str(self.Stressed)
@@ -271,6 +351,9 @@ class Underlying(caching.base.CachingMixin,models.Model):
         ordering = ['Ordering']
 
 class SegmentToken(caching.base.CachingMixin,models.Model):
+    """
+    Model for surface realizations of words.
+    """
     WordToken = models.ForeignKey('WordToken')
     SegmentType = models.ForeignKey(SegmentType)
     Begin = models.FloatField()
@@ -285,17 +368,28 @@ class SegmentToken(caching.base.CachingMixin,models.Model):
     class Meta:
         ordering = ['Begin']
 
-    def getEnd(self):
+    def get_end(self):
         return self.End
 
 class Category(caching.base.CachingMixin,models.Model):
+    """
+    Syntactic parts of speech for a given word token, as listed in the
+    Buckeye Corpus materials.
+
+    Should probably be redone at some point.  Part of speech tagging
+    for spontaneous speech is difficult.
+    """
     Label = models.CharField(max_length=10)
     Description = models.CharField(max_length=250)
     CategoryType = models.CharField('Category type',max_length=100)
 
     objects = caching.base.CachingManager()
 
-    def isContent(self):
+    def is_content(self):
+        """
+        Content (open class categories) versus function words and other
+        tags used.
+        """
         if self.CategoryType == 'Content':
             return True
         return False
@@ -304,6 +398,10 @@ class Category(caching.base.CachingMixin,models.Model):
         return u'%s' % self.Label
 
 class PrevCondProbs(caching.base.CachingMixin,models.Model):
+    """
+    Model for storing bigram probabilities for a word given its
+    preceding word.
+    """
     ActWord = models.ForeignKey('WordType',related_name='prevactword')
     PreviousWord = models.ForeignKey('WordType',related_name='prevword')
     Count = models.IntegerField(blank=True,null=True)
@@ -311,19 +409,27 @@ class PrevCondProbs(caching.base.CachingMixin,models.Model):
 
     objects = caching.base.CachingManager()
 
-    def getProb(self):
+    def get_prob(self):
+        """
+        Calculate conditional probability of word given previous word
+        if not already stored.
+        """
         if self.Prob is not None:
             return self.Prob
         qs = WordToken.objects.filter(WordType=self.ActWord)
         self.Count = 0
         for i in xrange(len(qs)):
-            if qs[i].getPreviousWord().WordType == self.PreviousWord:
+            if qs[i].get_previous_word().WordType == self.PreviousWord:
                 self.Count += 1
-        self.Prob = float(self.Count) / float(self.PreviousWord.getCount())
+        self.Prob = float(self.Count) / float(self.PreviousWord.get_count())
         self.save()
         return self.Prob
 
 class FollCondProbs(caching.base.CachingMixin,models.Model):
+    """
+    Model for storing bigram probabilities for a word given its
+    following word.
+    """
     ActWord = models.ForeignKey('WordType',related_name='follactword')
     FollowingWord = models.ForeignKey('WordType',related_name='follword')
     Count = models.IntegerField(blank=True,null=True)
@@ -331,19 +437,30 @@ class FollCondProbs(caching.base.CachingMixin,models.Model):
 
     objects = caching.base.CachingManager()
 
-    def getProb(self):
+    def get_prob(self):
+        """
+        Calculate conditional probability of word given following word
+        if not already stored.
+        """
         if self.Prob is not None:
             return self.Prob
         qs = WordToken.objects.filter(WordType=self.ActWord)
         self.Count = 0
         for i in xrange(len(qs)):
-            if qs[i].getFollowingWord().WordType == self.FollowingWord:
+            if qs[i].get_following_word().WordType == self.FollowingWord:
                 self.Count += 1
-        self.Prob = float(self.Count) / float(self.FollowingWord.getCount())
+        self.Prob = float(self.Count) / float(self.FollowingWord.get_count())
         self.save()
         return self.Prob
 
 class WordType(caching.base.CachingMixin,models.Model):
+    """
+    Model for storing lexical information about word types in the corpus.
+
+    Word types are more similar to word forms in CELEX than lemmas.
+
+    No morphological information or lemma information which might be nice.
+    """
     Label = models.CharField(max_length=250)
     UR = models.ManyToManyField(SegmentType,through=Underlying)
     Count = models.IntegerField(blank=True,null=True)
@@ -355,42 +472,91 @@ class WordType(caching.base.CachingMixin,models.Model):
     FWND = models.FloatField(blank=True,null=True)
     CVSkel = models.CharField(max_length=100,blank=True,null=True)
     StressVowel = models.CharField(max_length=10,blank=True,null=True)
+    Extra = PickledObjectField(null=True)
 
     objects = caching.base.CachingManager()
+
+    def get_celex_info(self):
+        """
+        Look up and store lexical information from CELEX.
+        """
+        if self.Extra is None:
+            self.Extra = {}
+        if 'CelexCategory' not in self.Extra:
+            info = get_lexical_info(self.Label)
+            try:
+                self.Extra['CelexCategory'] = info['Cat']
+            except KeyError:
+                self.Extra['CelexCategory'] = 'NA'
+            try:
+                self.Extra['CelexFrequency'] = info['Freq']
+            except KeyError:
+                self.Extra['CelexFrequency'] = 'NA'
+            try:
+                self.Extra['CelexNeighDen'],self.Extra['CelexFWND'] = info['ND'], info['FWND']
+            except KeyError:
+                self.Extra['CelexNeighDen'],self.Extra['CelexFWND'] = 'NA','NA'
+            try:
+                self.Extra['CelexSPhoneProb'],self.Extra['CelexBiPhoneProb'] = info['SP'],info['BP']
+            except KeyError:
+                self.Extra['CelexSPhoneProb'],self.Extra['CelexBiPhoneProb'] = 'NA','NA'
+            self.save()
+        return self.Extra
 
     def __unicode__(self):
         return u'%s' % self.Label
 
-    def isAcceptable(self):
-        qs = self.wordtoken_set.filter(Output__isnull=False)
-        if len(qs) > 0:
-            if 'CelexCategory' in qs[0].Output and qs[0].Output['CelexCategory'] not in ['N','V','ADV','A']:
-                return False
+    def is_acceptable(self):
+        """
+        Analyze only contentful words according to CELEX.
+        """
+        if self.Extra is None or 'CelexCategory' not in self.Extra:
+            self.get_celex_info()
+        if self.Extra['CelexCategory'] not in ['N','V','ADV','A']:
+            return False
+        #if self.get_syllable_count() < 2:
+        #    return False
         return True
 
-    def getUR(self,stressed=False,blick_style=False):
-        t = ' '.join([s.getStrTrans() for s in self.underlying_set.all()])
+    def get_UR(self,stressed=False,blick_style=False):
+        """
+        Get the underlying representation for a word type, can include
+        stress information, and be modified to fit the style for BLICK
+        (CMU dictionary).
+        """
+        t = ' '.join([s.get_stress_trans() for s in self.underlying_set.all()])
         if not stressed:
             t = re.sub(r'\d',r'',t)
         if blick_style:
             t = re.sub(r'EL(\d?)',r'AH\1 L',t)
         return t
 
-    def getBaseDuration(self):
-        return sum([x.getAverageDur() for x in self.UR.all()])
+    def get_base_duration(self):
+        """
+        Get the sum of the average durations for all segments in the
+        canonical production.
+        """
+        return sum([x.get_average_dur() for x in self.UR.all()])
 
-    def getPhonoSource(self):
-        if self.PhonoSource is None:
-            return ''
-        return self.PhonoSource
-
-    def getStressVowel(self):
+    def get_stress_vowel(self):
+        """
+        Get the primary stressed vowel of the word, or figure it out if
+        necessary.
+        """
         if self.StressVowel is None:
             self.figureStresses()
         return self.StressVowel
 
-    def figureStresses(self):
-        guessed = guessStress(self.getUR(blick_style=True))
+    def figure_stresses(self):
+        """
+        Uses BLICK to figure out the most likely stress pattern for the
+        word.
+
+        BLICK's guess method looks up the existence of the string
+        in its dictionary and returns that if found, otherwise finds the
+        transcription that has the lowest violation of its constraints.
+        """
+        guessed = guessStress(self.get_UR(blick_style=True))
         stresses = re.sub(r'\D',r'',guessed)
         syls = self.underlying_set.filter(SegmentType__Syllabic=True)
         for i in range(len(syls)):
@@ -402,12 +568,15 @@ class WordType(caching.base.CachingMixin,models.Model):
 
 
 
-    def getCVSkel(self):
+    def get_CV_skeleton(self):
+        """
+        Figure out a word's CV skeleton if not known already.
+        """
         if self.CVSkel is not None:
             return self.CVSkel
         cv = ''
         for seg in self.UR.all():
-            if seg.isVowel():
+            if seg.is_vowel():
                 cv += 'V'
             else:
                 cv += 'C'
@@ -415,34 +584,29 @@ class WordType(caching.base.CachingMixin,models.Model):
         self.save()
         return self.CVSkel
 
-    def getNumSylls(self):
-        numSylls = 0
-        for seg in self.UR.all():
-            if seg.isSyllabic():
-                numSylls += 1
-        return numSylls
+    def get_syllable_count(self):
+        """
+        Calculate the number of syllables in the word.
+        """
+        return sum([x.is_syllabic() for x in self.UR.all()])
 
-    def getNumVows(self):
-        numVows = 0
-        for seg in self.UR.all():
-            if seg.isVowel():
-                numVows += 1
-        return numVows
-
-    def isWord(self):
+    def is_word(self):
+        """
+        Check for whether the word is an annotation label or a word.
+        """
         if self.Label.startswith("{") or self.Label.startswith("<"):
             return False
         else:
             return True
 
-    def getCount(self):
+    def get_count(self):
         if self.Count != 0:
             return self.Count
         self.Count = WordToken.objects.filter(WordType=self).count()
         self.save()
         return self.Count
 
-    def getFreq(self,subset='all',speaker=None,dialog=None):
+    def get_frequency(self,subset='all',speaker=None,dialog=None):
         if subset=='all' and self.Frequency is not None:
             return self.Frequency
         base = WordToken.objects.all().select_related('WordType','Category')
@@ -462,7 +626,7 @@ class WordType(caching.base.CachingMixin,models.Model):
             self.save()
         return Freq
 
-    def getNDs(self,subset='all',speaker=None,dialog=None):
+    def get_NDs(self,subset='all',speaker=None,dialog=None):
         if subset == 'all' and self.ND is not None and self.FWND is not None:
             return self.ND,self.FWND
         any_segment = '[A-Za-z]{1,2}'
@@ -483,7 +647,7 @@ class WordType(caching.base.CachingMixin,models.Model):
         neighs = WordType.objects.filter(Label__regex="^[^{<]").extra(
                     where = [UR_LOOKUP],
                     params = ['|'.join(patterns)])
-        freqs = [ x.getFreq(subset=subset,speaker=speaker,dialog=dialog) for x in neighs]
+        freqs = [ x.get_frequency(subset=subset,speaker=speaker,dialog=dialog) for x in neighs]
         nd = sum([1 for x in freqs if x > 0])
         fwnd = sum(freqs)
         if subset == 'all':
@@ -491,19 +655,19 @@ class WordType(caching.base.CachingMixin,models.Model):
             self.save()
         return nd,fwnd
 
-    def getND(self,subset='all',speaker=None,dialog=None):
+    def get_ND(self,subset='all',speaker=None,dialog=None):
         if subset == 'all' and self.ND is not None:
             return self.ND
-        nd,fwnd = self.getNDs(subset=subset,speaker=speaker,dialog=dialog)
+        nd,fwnd = self.get_NDs(subset=subset,speaker=speaker,dialog=dialog)
         return nd
 
-    def getFWND(self,subset='all',speaker=None,dialog=None):
+    def get_FWND(self,subset='all',speaker=None,dialog=None):
         if subset == 'all' and self.FWND is not None:
             return self.FWND
-        nd,fwnd = self.getNDs(subset=subset,speaker=speaker,dialog=dialog)
+        nd,fwnd = self.get_NDs(subset=subset,speaker=speaker,dialog=dialog)
         return fwnd
 
-    def getPhonoProb(self,subset='all',speaker=None,dialog=None):
+    def get_phono_prob(self,subset='all',speaker=None,dialog=None):
         if subset == 'all' and self.SPhonoProb is not None and self.BiPhonoProb is not None:
             return self.SPhonoProb,self.BiPhonoProb
         base = WordType.objects.filter(Label__regex="^[^{<]")
@@ -580,119 +744,104 @@ class WordToken(caching.base.CachingMixin,models.Model):
 
     objects = caching.base.CachingManager()
 
+    class Meta:
+        ordering = ['Dialog','DialogPart','Begin']
+
     def __unicode__(self):
         return u'%s' % unicode(self.WordType)
 
-    def setSpecVariables(self,ceiling,numformants):
+    def set_spec_variables(self,ceiling,numformants):
         self.Ceiling = ceiling
         self.NumFormants = numformants
         self.save()
 
-    def getNFormants(self):
+    def get_number_formants(self):
         if self.NumFormants is not None:
             return self.NumFormants
         return self.Dialog.Speaker.NumFormants
 
-    def getCeiling(self):
+    def get_ceiling(self):
         if self.Ceiling is not None:
             return self.Ceiling
         return self.Dialog.Speaker.Ceiling
 
-    def getStrF1(self):
+    def get_stress_F1(self):
         if self.StrVowelF1 is None:
-            self.setStrFormants()
+            self.set_stress_formants()
         return self.StrVowelF1
 
-    def getStrF2(self):
+    def get_stress_F2(self):
         if self.StrVowelF2 is None:
-            self.setStrFormants()
+            self.set_stress_formants()
         return self.StrVowelF2
 
-    def getPrevSemPred(self,style='A',window='A'):
+    def get_sense(self,disambiguate=True):
+        if not disambiguate:
+            return
+        if self.Output is None:
+            self.Output = {}
+        if disambiguate:
+            if 'Wordnet_sense' not in self.Output:
+                cat = self.get_category(source='celex',style='wordnet')
+                if cat is None:
+                    self.Output['Wordnet_sense'] = None
+                    self.save()
+                    return None
+                if not disambiguate:
+                    return '.'.join([str(self),cat,'1'])
+                prev = ' '.join([str(x) for x in self.get_previous_context(window=10)])
+                foll = ' '.join([str(x) for x in self.get_following_context(window=10)])
+                self.Output['Wordnet_sense'] = SEM_PRED.disambiguate_sense(str(self),cat,prev,foll,to_string=True)
+                self.save()
+            return self.Output['Wordnet_sense']
+        else:
+            if 'Default_Wordnet_sense' not in self.Output:
+                cat = self.get_category(source='celex',style='wordnet')
+                if cat is None:
+                    self.Output['Default_Wordnet_sense'] = None
+                else:
+                    self.Output['Default_Wordnet_sense'] = '.'.join([str(self),cat,'1'])
+                    self.save()
+            return self.Output['Default_Wordnet_sense']
+
+    def getPrevSemPred(self,style='A',window='A',disambiguate=True):
         if style == 'A' and window == 'A':
             if self.PrevSemPred is not None:
                 return self.PrevSemPred
         if window != 'A':
-            prev_context = self.getPreviousContext(window = int(window))
+            prev_context = self.get_previous_context(window = int(window))
         else:
-            prev_context = self.getPreviousContext()
-        #catted = categorize_words([str(x)
-        #                        for x in prev_context
-        #                            if str(x) != str(self)]
-        #                        + [str(self)])
-
-        #cat_word = catted.pop(-1)
-        #tagged_context = ['#'.join([x,'1']) for x in
-        #                    catted
-        #                    if x[-2] == '#' and x[-1] in ['n','v','a','r']]
-        prev_context = filter(lambda x: x.getCelexCat() in ['N','V','A','ADV'],prev_context)
-        tagged_context = map(lambda x: '#'.join([str(x),
-                                                x.getCelexCat().lower().replace('adv','r'),
-                                                '1']),prev_context)
-        cat_word = '#'.join([str(self),self.getCelexCat(),'1'])
-        if cat_word.endswith('na#1'):
-            cat = self.Category.Label
-            if 'N' in cat:
-                cat = 'n'
-            elif 'JJ' in cat:
-                cat = 'a'
-            elif 'VB' in cat:
-                cat = 'v'
-            elif 'RB' in cat:
-                cat = 'r'
-            else:
-                cat = 'NA'
-            cat_word  = '#'.join([cat_word.split("#")[0],cat,'1'])
-        sp = getSemanticRelatedness(cat_word,tagged_context,style=style)
+            prev_context = self.get_previous_context()
+        prev_context = filter(lambda x: x is not None,[ x.get_sense(disambiguate=disambiguate) for x in prev_context if str(x) != str(self)])
+        sense = self.get_sense(disambiguate=disambiguate)
+        if sense is None:
+            return 'NA'
+        sp = perl_get_semantic_predictability(sense.replace('.','#'),map(lambda x: x.replace('.','#'),prev_context))
+        #sp = SEM_PRED.get_semantic_predictability(sense,prev_context,style=style)
         if style == 'A' and window == 'A':
             self.PrevSemPred = sp
             self.save()
-            return self.PrevSemPred
         return sp
 
-    def getFollSemPred(self,style='A',window='A'):
+    def getFollSemPred(self,style='A',window='A',disambiguate=True):
         if style == 'A' and window == 'A':
             if self.FollSemPred is not None:
                 return self.FollSemPred
         if window != 'A':
-            foll_context = self.getFollowingContext(window = int(window))
+            foll_context = self.get_following_context(window = int(window))
         else:
-            foll_context = self.getFollowingContext()
-        #catted = categorize_words([str(x)
-        #                        for x in foll_context
-        #                            if str(x) != str(self)]
-        #                        + [str(self)])
-
-        #cat_word = catted.pop(-1)
-        #tagged_context = ['#'.join([x,'1']) for x in
-        #                    catted
-        #                    if x[-2] == '#' and x[-1] in ['n','v','a','r']]
-        foll_context = filter(lambda x: x.getCelexCat() in ['N','V','A','ADV'],foll_context)
-        tagged_context = map(lambda x: '#'.join([str(x),
-                                                x.getCelexCat().lower().replace('adv','r'),
-                                                '1']),foll_context)
-        cat_word = '#'.join([str(self),self.getCelexCat(),'1'])
-        if cat_word.endswith('na#1'):
-            cat = self.Category.Label
-            if 'N' in cat:
-                cat = 'n'
-            elif 'JJ' in cat:
-                cat = 'a'
-            elif 'VB' in cat:
-                cat = 'v'
-            elif 'RB' in cat:
-                cat = 'r'
-            else:
-                cat = 'NA'
-            cat_word  = '#'.join([cat_word.split("#")[0],cat,'1'])
-        sp = getSemanticRelatedness(cat_word,tagged_context,style=style)
+            foll_context = self.get_following_context()
+        foll_context = filter(lambda x: x is not None,[ x.get_sense(disambiguate=disambiguate) for x in foll_context if str(x) != str(self)])
+        sense = self.get_sense(disambiguate=disambiguate)
+        if sense is None:
+            return 'NA'
+        sp = SEM_PRED.get_semantic_predictability(sense,foll_context,style=style)
         if style == 'A' and window == 'A':
             self.FollSemPred = sp
             self.save()
-            return self.FollSemPred
         return sp
 
-    def setStrFormants(self,formants=None):
+    def set_stress_formants(self,formants=None):
         if formants is not None:
             self.StrVowelF1 = formants[0]
             self.StrVowelF2 = formants[1]
@@ -700,9 +849,9 @@ class WordToken(caching.base.CachingMixin,models.Model):
         else:
             p = PraatLoader(settings.PRAAT_PATH,debug=settings.DEBUG)
             path = str(self.Dialog.Speaker) + "/" + str(self.Dialog)+self.DialogPart
-            begin,end = self.getStressedVowelInfo()
-            ceiling = self.getCeiling()
-            nformants = self.getNFormants()
+            begin,end = self.get_stressed_vowel_info()
+            ceiling = self.get_ceiling()
+            nformants = self.get_number_formants()
             out = p.get_formants(fetch_buckeye_resource("Speakers/"+path+'.wav'),begin,end,nformants,ceiling)
             dur = float(end)-float(begin)
             if dur > 0.0 and len(out) > 0:
@@ -713,26 +862,24 @@ class WordToken(caching.base.CachingMixin,models.Model):
                     self.StrVowelF2 = sum(map(float,ftwos))/float(len(ftwos))
                     self.save()
 
-    def hasStress(self):
+    def has_stress(self):
         for s in self.segmenttoken_set.all():
             if s.Stressed:
                 return True
         return False
 
-    def getStrVowel(self):
-        pass
 
-    def getSR(self):
+    def get_SR(self):
         return ".".join([unicode(s) for s in self.SR.all()])
 
-    def getStressedVowelInfo(self,cvc=True):
+    def get_stressed_vowel_info(self,cvc=True):
         if cvc:
             qs = self.segmenttoken_set.filter(SegmentType__Vowel=True)
             if len(qs) > 0:
                 return qs[0].Begin,qs[0].End
             else:
                 return 0.0,0.0
-        if self.hasStress():
+        if self.has_stress():
             qs = self.segmenttoken_set.get(Stressed=True)
             print qs
             return qs.Begin,qs.End
@@ -751,17 +898,17 @@ class WordToken(caching.base.CachingMixin,models.Model):
             if m[1] == str(sr[sj]):
                 sj += 1
 
-        return self.getStressedVowelInfo()
+        return self.get_stressed_vowel_info()
 
-    def getDialogPath(self):
+    def get_dialog_path(self):
         path = fetch_buckeye_resource("Speakers/"+str(self.Dialog.Speaker) + "/" + str(self.Dialog)+self.DialogPart + ".wav")
         return path
 
-    def getAcousticInfo(self):
+    def get_acoustic_info(self):
         sr = self.segmenttoken_set.all()
         begin = None
         for s in xrange(len(sr)):
-            if sr[s].SegmentType.isVowel():
+            if sr[s].SegmentType.is_vowel():
                 prevSound = sr[s-1].SegmentType.Label
                 vow = sr[s].SegmentType.Label
                 follSound = sr[s+1].SegmentType.Label
@@ -769,7 +916,7 @@ class WordToken(caching.base.CachingMixin,models.Model):
                 end = sr[s].End
         return begin,end,vow,prevSound,follSound
 
-    def getPreviousWord(self):
+    def get_previous_word(self):
         if self.DialogPart == 'b' and self.Begin == 0.0:
             prev = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(DialogPart='a').order_by('-Begin')
         else:
@@ -778,7 +925,7 @@ class WordToken(caching.base.CachingMixin,models.Model):
             return prev[0]
         return None
 
-    def getFollowingWord(self):
+    def get_following_word(self):
         foll = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(pk=self.pk+1)
         if self.DialogPart == 'a' and len(foll) == 0:
             foll = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(DialogPart='b').filter(Begin__exact=0.0)
@@ -786,57 +933,57 @@ class WordToken(caching.base.CachingMixin,models.Model):
             return foll[0]
         return None
 
-    def getPreviousContext(self,window='auto'):
+    def get_previous_context(self,window='auto'):
         if window == 'auto':
             window_max = 10
         else:
             window_max = window
         context = []
-        prev = self.getPreviousWord()
-        durSum = prev.getDuration()
+        prev = self.get_previous_word()
+        durSum = prev.get_duration()
         while durSum <= window_max:
             if prev is None:
                 break
-            if prev.WordType.isWord():
+            if prev.WordType.is_word():
                 context.append(prev)
-            durSum += prev.getDuration()
-            if window == 'auto' and prev.afterPause():
+            durSum += prev.get_duration()
+            if window == 'auto' and prev.after_pause():
                 break
-            prev = prev.getPreviousWord()
+            prev = prev.get_previous_word()
         return reversed(context)
 
-    def getFollowingContext(self,window='auto'):
+    def get_following_context(self,window='auto'):
         if window == 'auto':
             window_max = 10
         else:
             window_max = window
         context = []
-        foll = self.getFollowingWord()
-        durSum = foll.getDuration()
+        foll = self.get_following_word()
+        durSum = foll.get_duration()
         while durSum <= window_max:
             if foll is None:
                 break
-            if foll.WordType.isWord():
+            if foll.WordType.is_word():
                 context.append(foll)
-            durSum += foll.getDuration()
-            if window == 'auto' and foll.beforePause():
+            durSum += foll.get_duration()
+            if window == 'auto' and foll.before_pause():
                 break
-            foll = foll.getFollowingWord()
+            foll = foll.get_following_word()
         return context
 
-    def getRecentRepetition(self):
-        cont = set(map(str,self.getPreviousContext()))
+    def get_recent_repetition(self):
+        cont = set(map(str,self.get_previous_context()))
         if str(self) in cont:
             return True
         return False
 
-    def getRepetitions(self):
+    def get_repetitions(self):
         reps = WordToken.objects.filter(Dialog=self.Dialog).filter(DialogPart=self.DialogPart).filter(End__lte=self.Begin).filter(WordType=self.WordType).count()
         if self.DialogPart == 'b':
             reps = reps + WordToken.objects.filter(Dialog=self.Dialog).filter(DialogPart='a').filter(WordType=self.WordType).count()
         return reps
 
-    def getDialogPlace(self):
+    def get_dialog_place(self):
         diagPlace = self.Begin
         if self.DialogPart == 'b':
             aDiag = WordToken.objects.filter(Dialog=self.Dialog).filter(DialogPart='a').order_by('-Begin')
@@ -845,94 +992,90 @@ class WordToken(caching.base.CachingMixin,models.Model):
                 diagPlace += lengthOfA
         return diagPlace
 
-    def getNumSylls(self):
-        numSylls = 0
-        for seg in self.SR.all():
-            if seg.isSyllabic():
-                numSylls += 1
-        return numSylls
+    def get_syllable_count(self):
+        return sum([x.is_syllabic() for x in self.SR.all()])
 
-    def getDuration(self):
+    def get_duration(self):
         return self.End - self.Begin
 
-    def afterPause(self):
-        if self.getPreviousWord() is None:
+    def after_pause(self):
+        if self.get_previous_word() is None:
             return True
-        if self.getPreviousWord().Category.CategoryType == "Disfluency":
+        if self.get_previous_word().Category.CategoryType == "Disfluency":
             return True
-        if self.getPreviousWord().Category.CategoryType == "Other":
+        if self.get_previous_word().Category.CategoryType == "Other":
             return True
-        if self.getPreviousWord().Category.CategoryType == "Pause":
-            if self.getPreviousWord().getDuration() >= 0.5:
+        if self.get_previous_word().Category.CategoryType == "Pause":
+            if self.get_previous_word().get_duration() >= 0.5:
                 return True
         return False
 
-    def beforePause(self):
-        if self.getFollowingWord() is None:
+    def before_pause(self):
+        if self.get_following_word() is None:
             return True
-        if self.getFollowingWord().Category.CategoryType == "Disfluency":
+        if self.get_following_word().Category.CategoryType == "Disfluency":
             return True
-        if self.getFollowingWord().Category.CategoryType == "Other":
+        if self.get_following_word().Category.CategoryType == "Other":
             return True
-        if self.getFollowingWord().Category.CategoryType == "Pause":
-            if self.getFollowingWord().getDuration() >= 0.5:
+        if self.get_following_word().Category.CategoryType == "Pause":
+            if self.get_following_word().get_duration() >= 0.5:
                 return True
         return False
 
-    def nextToPause(self):
-        if self.afterPause():
+    def next_to_pause(self):
+        if self.after_pause():
             return True
-        if self.beforePause():
+        if self.before_pause():
             return True
         return False
 
-    def getPreviousSpeakingRate(self):
-        prev_context = self.getPreviousContext()
-        total_syllables = float(sum([x.getNumSylls() for x in prev_context]))
-        total_seconds = self.getPrevDistToPause()
+    def get_previous_speaking_rate(self):
+        prev_context = self.get_previous_context()
+        total_syllables = float(sum([x.get_syllable_count() for x in prev_context]))
+        total_seconds = self.get_prev_dist_to_pause()
         if total_seconds != 0.0:
             rate = total_syllables / total_seconds
         else:
             rate = 0.0
         return rate
 
-    def getFollowingSpeakingRate(self):
-        foll_context = self.getFollowingContext()
-        total_syllables = float(sum([x.getNumSylls() for x in foll_context]))
-        total_seconds = self.getFollDistToPause()
+    def get_following_speaking_rate(self):
+        foll_context = self.get_following_context()
+        total_syllables = float(sum([x.get_syllable_count() for x in foll_context]))
+        total_seconds = self.get_foll_dist_to_pause()
         if total_seconds != 0.0:
             rate = total_syllables / total_seconds
         else:
             rate = 0.0
         return rate
 
-    def getPrevDistToPause(self):
-        if self.afterPause():
+    def get_prev_dist_to_pause(self):
+        if self.after_pause():
             return 0.0
-        return sum([x.getDuration() for x in self.getPreviousContext()])
+        return sum([x.get_duration() for x in self.get_previous_context()])
 
-    def getFollDistToPause(self):
-        if self.beforePause():
+    def get_foll_dist_to_pause(self):
+        if self.before_pause():
             return 0.0
-        return sum([x.getDuration() for x in self.getFollowingContext()])
+        return sum([x.get_duration() for x in self.get_following_context()])
 
-    def getPreviousCondProb(self):
-        if self.afterPause():
+    def get_previous_cond_prob(self):
+        if self.after_pause():
             return 0.0
-        if not self.getPreviousWord().WordType.isWord():
+        if not self.get_previous_word().WordType.is_word():
             return 0.0
-        prev = self.getPreviousWord()
+        prev = self.get_previous_word()
         pc = PrevCondProbs.objects.get_or_create(ActWord=self.WordType,PreviousWord=prev.WordType)[0]
-        return pc.getProb()
+        return pc.get_prob()
 
-    def getFollowingCondProb(self):
-        if self.beforePause():
+    def get_following_cond_prob(self):
+        if self.before_pause():
             return 0.0
-        foll = self.getFollowingWord()
+        foll = self.get_following_word()
         fc = FollCondProbs.objects.get_or_create(ActWord=self.WordType,FollowingWord=foll.WordType)[0]
-        return fc.getProb()
+        return fc.get_prob()
 
-    def createPictures(self):
+    def create_pictures(self):
         p = PraatLoader(settings.PRAAT_PATH,debug=settings.DEBUG)
         wavpath = os.path.join(settings.TEMP_DIR,"Buckeye-"+str(self.pk)+".wav")
         outpath = os.path.join(settings.TEMP_DIR,"Buckeye-"+str(self.pk)+".mp3")
@@ -940,11 +1083,11 @@ class WordToken(caching.base.CachingMixin,models.Model):
         specpath = os.path.join(settings.TEMP_DIR,"Buckeye-"+str(self.pk)+"-spectro.png")
         wfepspath = os.path.join(settings.TEMP_DIR,"Buckeye-"+str(self.pk)+"-waveform.eps")
         waveformpath = os.path.join(settings.TEMP_DIR,"Buckeye-"+str(self.pk)+"-waveform.png")
-        filename = self.getDialogPath()
+        filename = self.get_dialog_path()
         beg = self.Begin
         end = self.End
-        ceiling = self.getCeiling()
-        nformants = self.getNFormants()
+        ceiling = self.get_ceiling()
+        nformants = self.get_number_formants()
         if not os.path.isfile(wavpath):
             p.extract_token(filename, beg, end, wavpath)
         if not os.path.isfile(waveformpath):
@@ -967,18 +1110,42 @@ class WordToken(caching.base.CachingMixin,models.Model):
         #grapher.render(output=waveformpath)
         #spectrogram.render().save(specpath)
 
-    def isAcceptable(self):
-        if self.nextToPause():
-            return False
-        if len(self.WordType.getCVSkel()) < 3:
+    def is_acceptable(self):
+        if self.next_to_pause():
             return False
         return True
+
+    def get_category(self,source='celex',style=None):
+        if source =='celex':
+            cat = self.getCelexCat()
+        else:
+            cat = str(self.Category)
+        if style == 'wordnet':
+            if source == 'celex':
+                if cat == 'ADV':
+                    cat = 'R'
+
+                if cat not in ['N','A','R','V']:
+                    return None
+                cat = cat.lower()
+            else:
+                if 'N' in cat:
+                    cat = 'n'
+                elif 'JJ' in cat:
+                    cat = 'a'
+                elif 'VB' in cat:
+                    cat = 'v'
+                elif 'RB' in cat:
+                    cat = 'r'
+                else:
+                    return None
+        return cat
 
     def getCelexCat(self):
         if self.Output is None:
             self.Output = {}
         if 'CelexCategory' not in self.Output:
-            cat = lookupCat(self.WordType.Label)
+            cat = self.WordType.get_celex_info()['CelexCategory']
             self.Output['CelexCategory'] = cat
             self.save()
         return self.Output['CelexCategory']
@@ -991,48 +1158,47 @@ class WordToken(caching.base.CachingMixin,models.Model):
         else:
             outline = {}
 
-        if outline == {}:
+        if 'Word' not in outline:
             outline['Word'] = self.WordType.Label
+        if 'Token' not in outline:
             outline['Token'] = self.pk
+        if 'Speaker' not in outline:
             outline['Speaker'] = str(self.Dialog.Speaker)
-            if form['measure'] != 'N':
-                beg,end,vow,prevSound,follSound = self.getAcousticInfo()
-                outline['Vowel'] = self.WordType.getStressVowel()
+
+        if form['measure'] != 'N':
+            beg,end,vow,prevSound,follSound = self.get_acoustic_info()
+            if 'Vowel' not in outline:
+                outline['Vowel'] = self.WordType.get_stress_vowel()
                 outline['PrevCons'] = prevSound
                 outline['FollCons'] = follSound
-        if form['segmentalDurations']:
-            if 'VowDur' not in outline:
-                outline['VowDur'] = end-beg
-                outline['OtherDur'] = self.getDuration()- outline['VowDur']
+            if form['segmentalDurations']:
+                if 'VowDur' not in outline:
+                    outline['VowDur'] = end-beg
+                    outline['OtherDur'] = self.get_duration()- outline['VowDur']
         if form['speakingRates']:
             if 'PrevSpeakRate' not in outline:
-                outline['PrevSpeakRate'] = self.getPreviousSpeakingRate()
-                outline['FollSpeakRate'] = self.getFollowingSpeakingRate()
-                outline['AvgSpeakRate'] = self.Dialog.Speaker.getAvgSpeakingRate()
+                outline['PrevSpeakRate'] = self.get_previous_speaking_rate()
+                outline['FollSpeakRate'] = self.get_following_speaking_rate()
+                outline['AvgSpeakRate'] = self.Dialog.Speaker.get_avg_speaking_rate()
         if form['contextProbs']:
             if 'PrevCondProb' not in outline:
-                outline['PrevCondProb'] = self.getPreviousCondProb()
-                outline['FollCondProb'] = self.getFollowingCondProb()
+                outline['PrevCondProb'] = self.get_previous_cond_prob()
+                outline['FollCondProb'] = self.get_following_cond_prob()
         if form['repetitions']:
             if 'Repetitions' not in outline:
-                outline['Repetitions'] = self.getRepetitions()
-                outline['wasRepeatedRecently'] = self.getRecentRepetition()
+                outline['Repetitions'] = self.get_repetitions()
+                outline['wasRepeatedRecently'] = self.get_recent_repetition()
         if form['wasRepeated']:
             if 'Repetitions' not in outline:
-                outline['Repetitions'] = self.getRepetitions()
+                outline['Repetitions'] = self.get_repetitions()
             if 'wasRepeated' not in outline:
                 if outline['Repetitions'] != 0:
                     outline['wasRepeated'] = 'True'
                 else:
                     outline['wasRepeated'] = 'False'
+        celex_info = self.WordType.get_celex_info()
         if 'CelexCategory' not in outline:
-            cat = lookupCat(self.WordType.Label)
-            outline['CelexCategory'] = cat
-        if outline['CelexCategory'] not in ['N','ADV','A','V']:
-            return None
-
-        if 'C' in form['lexical_scale']:
-            celex_info = get_lexical_info(self.WordType.Label)
+            outline['CelexCategory'] = celex_info['CelexCategory']
 
         if 'B' in form['category']:
             if 'BuckeyeCategory' not in outline:
@@ -1040,25 +1206,25 @@ class WordToken(caching.base.CachingMixin,models.Model):
 
         if form['wordDuration']:
             if 'WordDuration' not in outline:
-                outline['WordDuration'] = self.getDuration()
-                outline['BaselineDur'] = self.WordType.getBaseDuration()
+                outline['WordDuration'] = self.get_duration()
+                outline['BaselineDur'] = self.WordType.get_base_duration()
 
         if form['frequency']:
             if 'C' in form['lexical_scale'] and 'CelexFrequency' not in outline:
                 try:
-                    outline['CelexFrequency'] = celex_info['Freq']
+                    outline['CelexFrequency'] = celex_info['CelexFrequency']
                 except KeyError:
                     outline['CelexFrequency'] = 'NA'
             if 'W' in form['lexical_scale'] and 'BuckeyeFrequency' not in outline:
-                outline['BuckeyeFrequency'] = self.WordType.getFreq()
+                outline['BuckeyeFrequency'] = self.WordType.get_frequency()
             if 'S' in form['lexical_scale'] and 'SpeakerFrequency' not in outline:
-                outline['SpeakerFrequency'] = self.WordType.getFreq(subset='speaker',speaker=self.Dialog.Speaker)
+                outline['SpeakerFrequency'] = self.WordType.get_frequency(subset='speaker',speaker=self.Dialog.Speaker)
             if 'A' in form['lexical_scale'] and 'AgeFrequency' not in outline:
-                outline['AgeFrequency'] = self.WordType.getFreq(subset='age',speaker=self.Dialog.Speaker)
+                outline['AgeFrequency'] = self.WordType.get_frequency(subset='age',speaker=self.Dialog.Speaker)
             if 'G' in form['lexical_scale'] and 'GenderFrequency' not in outline:
-                outline['GenderFrequency'] = self.WordType.getFreq(subset='gender',speaker=self.Dialog.Speaker)
+                outline['GenderFrequency'] = self.WordType.get_frequency(subset='gender',speaker=self.Dialog.Speaker)
             if 'D' in form['lexical_scale'] and 'DialogFrequency' not in outline:
-                outline['DialogFrequency'] = self.WordType.getFreq(subset='dialog',speaker=self.Dialog.Speaker,dialog=self.Dialog)
+                outline['DialogFrequency'] = self.WordType.get_frequency(subset='dialog',speaker=self.Dialog.Speaker,dialog=self.Dialog)
 
         if form['gender']:
             if 'SpeakerGender' not in outline:
@@ -1076,28 +1242,28 @@ class WordToken(caching.base.CachingMixin,models.Model):
         if form['nd']:
             if 'C' in form['lexical_scale'] and 'CelexNeighDen' not in outline:
                 try:
-                    outline['CelexNeighDen'],outline['CelexFWND'] = celex_info['ND'],celex_info['FWND']
+                    outline['CelexNeighDen'],outline['CelexFWND'] = celex_info['CelexNeighDen'],celex_info['CelexFWND']
                 except KeyError:
                     outline['CelexNeighDen'],outline['CelexFWND'] = 'NA','NA'
             if 'W' in form['lexical_scale'] and 'BuckeyeNeighDen' not in outline:
-                outline['BuckeyeNeighDen'],outline['BuckeyeFWND'] = self.WordType.getNDs()
+                outline['BuckeyeNeighDen'],outline['BuckeyeFWND'] = self.WordType.get_NDs()
             if 'S' in form['lexical_scale'] and 'SpeakerNeighDen' not in outline:
-                outline['SpeakerNeighDen'],outline['SpeakerFWND'] = self.WordType.getNDs(subset='speaker',speaker=self.Dialog.Speaker)
+                outline['SpeakerNeighDen'],outline['SpeakerFWND'] = self.WordType.get_NDs(subset='speaker',speaker=self.Dialog.Speaker)
             if 'A' in form['lexical_scale'] and 'AgeNeighDen' not in outline:
-                outline['AgeNeighDen'],outline['AgeFWND'] = self.WordType.getNDs(subset='age',speaker=self.Dialog.Speaker)
+                outline['AgeNeighDen'],outline['AgeFWND'] = self.WordType.get_NDs(subset='age',speaker=self.Dialog.Speaker)
             if 'G' in form['lexical_scale'] and 'GenderNeighDen' not in outline:
-                outline['GenderNeighDen'],outline['GenderFWND'] = self.WordType.getNDs(subset='gender',speaker=self.Dialog.Speaker)
+                outline['GenderNeighDen'],outline['GenderFWND'] = self.WordType.get_NDs(subset='gender',speaker=self.Dialog.Speaker)
             if 'D' in form['lexical_scale'] and 'DialogNeighDen' not in outline:
-                outline['DialogNeighDen'],outline['DialogFWND'] = self.WordType.getNDs(subset='dialog',speaker=self.Dialog.Speaker,dialog=self.Dialog)
+                outline['DialogNeighDen'],outline['DialogFWND'] = self.WordType.get_NDs(subset='dialog',speaker=self.Dialog.Speaker,dialog=self.Dialog)
 
         if form['phonotactic']:
             if 'C' in form['lexical_scale'] and 'CelexSPhoneProb' not in outline:
                 try:
-                    outline['CelexSPhoneProb'],outline['CelexBiPhoneProb'] = celex_info['SP'],celex_info['BP']
+                    outline['CelexSPhoneProb'],outline['CelexBiPhoneProb'] = celex_info['CelexSPhoneProb'],celex_info['CelexBiPhoneProb']
                 except KeyError:
                     outline['CelexSPhoneProb'],outline['CelexBiPhoneProb'] = 'NA','NA'
             if 'W' in form['lexical_scale'] and 'BuckeyeSPhoneProb' not in outline:
-                outline['BuckeyeSPhoneProb'],outline['BuckeyeBiPhoneProb'] = self.WordType.getPhonoProb()
+                outline['BuckeyeSPhoneProb'],outline['BuckeyeBiPhoneProb'] = self.WordType.get_phono_prob()
             if 'S' in form['lexical_scale'] and 'SpeakerSPhoneProb' not in outline:
                 qs = WordToken.objects.filter(Dialog__Speaker= self.Dialog.Speaker).filter(WordType=self.WordType).order_by('Dialog')
                 for q in qs:
@@ -1105,7 +1271,7 @@ class WordToken(caching.base.CachingMixin,models.Model):
                         outline['SpeakerSPhoneProb'],outline['SpeakerBiPhoneProb'] = q.Output['SpeakerSPhoneProb'],q.Output['SpeakerBiPhoneProb']
                         break
                 else:
-                    outline['SpeakerSPhoneProb'],outline['SpeakerBiPhoneProb'] = self.WordType.getPhonoProb(subset='speaker',speaker=self.Dialog.Speaker)
+                    outline['SpeakerSPhoneProb'],outline['SpeakerBiPhoneProb'] = self.WordType.get_phono_prob(subset='speaker',speaker=self.Dialog.Speaker)
             if 'A' in form['lexical_scale'] and 'AgeSPhoneProb' not in outline:
                 qs = WordToken.objects.filter(Dialog__Speaker__Age= self.Dialog.Speaker.Age).filter(WordType=self.WordType).order_by('Dialog')
                 for q in qs:
@@ -1113,7 +1279,7 @@ class WordToken(caching.base.CachingMixin,models.Model):
                         outline['AgeSPhoneProb'],outline['AgeBiPhoneProb'] = q.Output['AgeSPhoneProb'],q.Output['AgeBiPhoneProb']
                         break
                 else:
-                    outline['AgeSPhoneProb'],outline['AgeBiPhoneProb'] = self.WordType.getPhonoProb(subset='age',speaker=self.Dialog.Speaker)
+                    outline['AgeSPhoneProb'],outline['AgeBiPhoneProb'] = self.WordType.get_phono_prob(subset='age',speaker=self.Dialog.Speaker)
             if 'G' in form['lexical_scale'] and 'GenderSPhoneProb' not in outline:
                 qs = WordToken.objects.filter(Dialog__Speaker__Gender= self.Dialog.Speaker.Gender).filter(WordType=self.WordType).order_by('Dialog')
                 for q in qs:
@@ -1121,48 +1287,53 @@ class WordToken(caching.base.CachingMixin,models.Model):
                         outline['GenderSPhoneProb'],outline['GenderBiPhoneProb'] = q.Output['GenderSPhoneProb'],q.Output['GenderBiPhoneProb']
                         break
                 else:
-                    outline['GenderSPhoneProb'],outline['GenderBiPhoneProb'] = self.WordType.getPhonoProb(subset='gender',speaker=self.Dialog.Speaker)
+                    outline['GenderSPhoneProb'],outline['GenderBiPhoneProb'] = self.WordType.get_phono_prob(subset='gender',speaker=self.Dialog.Speaker)
             if 'D' in form['lexical_scale'] and 'DialogSPhoneProb' not in outline:
-                outline['DialogSPhoneProb'],outline['DialogBiPhoneProb'] = self.WordType.getPhonoProb(subset='dialog',speaker=self.Dialog.Speaker,dialog=self.Dialog)
+                outline['DialogSPhoneProb'],outline['DialogBiPhoneProb'] = self.WordType.get_phono_prob(subset='dialog',speaker=self.Dialog.Speaker,dialog=self.Dialog)
 
         if form['additional_phono_stats']:
             if 'PhonoStatsNeighDen' not in outline:
-                outline['PhonoStatsNeighDen'] = getNeighCount(self.WordType.getUR(
+                outline['PhonoStatsNeighDen'] = getNeighCount(self.WordType.get_UR(
                                                         stressed=True,blick_style=True),no_stress=True)
             if 'PhonoStatsBlickPhono' not in outline:
-                outline['PhonoStatsBlickPhono'] = getPhonotacticProb(self.WordType.getUR(
+                outline['PhonoStatsBlickPhono'] = getPhonotacticProb(self.WordType.get_UR(
                                                         stressed=True,blick_style=True),
                                                         use_blick=True,no_stress=True)
             if 'PhonoStatsSPhoneProb' not in outline:
-                outline['PhonoStatsSPhoneProb'],outline['PhonoStatsBiPhoneProb'] = getPhonotacticProb(self.WordType.getUR(
+                outline['PhonoStatsSPhoneProb'],outline['PhonoStatsBiPhoneProb'] = getPhonotacticProb(self.WordType.get_UR(
                                                         stressed=True,blick_style=True),use_blick=False,no_stress=True)
 
         for w in eval(form['sem_pred_window']):
             for s in eval(form['sem_pred_style']):
-                if form['prev_sem_pred']:
-                    label = '%sWindowPrev%sSemPred' %(w,s)
-                    if label not in outline:
-                        outline[label] = self.getPrevSemPred(window = w,style=s)
-                if form['foll_sem_pred']:
-                    label = '%sWindowFoll%sSemPred' %(w,s)
-                    if label not in outline:
-                        outline[label] = self.getFollSemPred(window = w,style=s)
+                for d in eval(form['sense_options']):
+                    if d == 'Disambiguate':
+                        dcheck = True
+                    else:
+                        dcheck = False
+                    if form['prev_sem_pred']:
+                        label = '%s%sWindowPrev%sSemPred' %(d,w,s)
+                        if label not in outline:
+                            outline[label] = self.getPrevSemPred(window = w,style=s,disambiguate=dcheck)
+                    if form['foll_sem_pred']:
+                        label = '%s%sWindowFoll%sSemPred' %(d,w,s)
+                        if label not in outline:
+                            outline[label] = self.getFollSemPred(window = w,style=s,disambiguate=ddcheck)
         if form['pause_dist']:
             if 'DistFollPause' not in outline:
-                outline['DistFollPause'] = self.getFollDistToPause()
+                outline['DistFollPause'] = self.get_foll_dist_to_pause()
             if 'DistPrevPause' not in outline:
-                outline['DistPrevPause'] = self.getPrevDistToPause()
+                outline['DistPrevPause'] = self.get_prev_dist_to_pause()
         if form['placeInDialog']:
             if 'placeInDialog' not in outline:
-                outline['placeInDialog'] = self.getDialogPlace()
+                outline['placeInDialog'] = self.get_dialog_place()
         if form['measure'] == 'S':
             if 'formants' not in outline:
-                ceiling = self.getCeiling()
-                nformants = self.getNFormants()
+                ceiling = self.get_ceiling()
+                nformants = self.get_number_formants()
                 outline['formants'] = [ {'time(s)':x['time(s)'],
                             'F1(Hz)':x['F1(Hz)'],
                             'F2(Hz)':x['F2(Hz)']}
-                            for x in p.get_formants(self.getDialogPath(),beg,end,nformants,ceiling)
+                            for x in p.get_formants(self.get_dialog_path(),beg,end,nformants,ceiling)
                                 if x['F1(Hz)'] != '--undefined--' and x['F2(Hz)'] != '--undefined--']
             to_out = [ {'time':x['time(s)'],
                             'F1':x['F1(Hz)'],
@@ -1171,8 +1342,8 @@ class WordToken(caching.base.CachingMixin,models.Model):
                             for x in outline['formants']]
         elif form['measure'] != 'N':
             if 'F1' not in outline:
-                F1 = self.getStrF1()
-                F2 = self.getStrF2()
+                F1 = self.get_stress_F1()
+                F2 = self.get_stress_F2()
                 if F1 is None:
                     outline['F1'] = 'NA'
                 else:
@@ -1184,12 +1355,12 @@ class WordToken(caching.base.CachingMixin,models.Model):
             if form['measure'] == 'D' and 'NA' not in [outline['F1'],outline['F2']]:
                 if form['DispersionFromAH']:
                     if 'AHDispersion' not in outline:
-                        center = self.Dialog.Speaker.getAHCenter()
+                        center = self.Dialog.Speaker.get_AH_center()
                         outline['AHDispersion'] = math.sqrt(math.pow(outline['F1']-center[0],2)+math.pow(outline['F2']-center[1],2))
 
                 else:
                     if 'Dispersion' not in outline:
-                        center = self.Dialog.Speaker.getCenter()
+                        center = self.Dialog.Speaker.get_center()
                         outline['Dispersion'] = math.sqrt(math.pow(outline['F1']-center[0],2)+math.pow(outline['F2']-center[1],2))
 
             elif form['measure'] == 'D':
@@ -1206,53 +1377,53 @@ class WordToken(caching.base.CachingMixin,models.Model):
             self.save()
 
     def get_details(self):
-        if self.WordType.isWord():
-            sp,bp = self.WordType.getPhonoProb()
-            cont = OrderedDict([('Previous conditional probability', self.getPreviousCondProb()),
-                        ('Following conditional probability', self.getFollowingCondProb()),
-                        ('Previous speaking rate', self.getPreviousSpeakingRate()),
-                        ('Following speaking rate', self.getFollowingSpeakingRate()),
-                        ('Previous distance to pause', self.getPrevDistToPause()),
-                        ('Following distance to pause', self.getFollDistToPause()),
-                        ('Previous semantic predictability', self.getPrevSemPred()),
-                        ('Following semantic predictability',self.getFollSemPred())])
+        if self.WordType.is_word():
+            sp,bp = self.WordType.get_phono_prob()
+            cont = OrderedDict([('Previous conditional probability', self.get_previous_cond_prob()),
+                        ('Following conditional probability', self.get_following_cond_prob()),
+                        ('Previous speaking rate', self.get_previous_speaking_rate()),
+                        ('Following speaking rate', self.get_following_speaking_rate()),
+                        ('Previous distance to pause', self.get_prev_dist_to_pause()),
+                        ('Following distance to pause', self.get_foll_dist_to_pause()),
+                        ('Previous semantic predictability', self.get_prev_sem_pred()),
+                        ('Following semantic predictability',self.get_foll_sem_pred())])
             lex = OrderedDict([('Word', str(self.WordType)),
-                            ('Underlying representation', self.WordType.getUR()),
-                            ('Buckeye frequency', self.WordType.getFreq()),
+                            ('Underlying representation', self.WordType.get_UR()),
+                            ('Buckeye frequency', self.WordType.get_frequency()),
                             ('Buckeye single-phone probability', sp),
                             ('Buckeye bi-phone probability', bp),
-                            ('Buckeye neighbourhood density', self.WordType.getND()),
-                            ('Buckeye frequency-weighted neighbourhood density', self.WordType.getFWND()),
-                            ('Stress vowel', self.WordType.getStressVowel())])
+                            ('Buckeye neighbourhood density', self.WordType.get_ND()),
+                            ('Buckeye frequency-weighted neighbourhood density', self.WordType.get_FWND()),
+                            ('Stress vowel', self.WordType.get_stress_vowel())])
             tok = OrderedDict([('Dialog', str(self.Dialog)),
-                            ('Surface representation', self.getSR()),
+                            ('Surface representation', self.get_SR()),
                             ('Buckeye category', str(self.Category)),
-                            ('Stress vowel F1', self.getStrF1()),
-                            ('Stress vowel F2', self.getStrF2()),
-                            ('Repetitions', self.getRepetitions()),
-                            ('Given', self.getRecentRepetition())])
+                            ('Stress vowel F1', self.get_stress_F1()),
+                            ('Stress vowel F2', self.get_stress_F2()),
+                            ('Repetitions', self.get_repetitions()),
+                            ('Given', self.get_recent_repetition())])
             speak = OrderedDict([('Speaker', str(self.Dialog.Speaker)),
                             ('Gender', self.Dialog.Speaker.Gender),
                             ('Age', self.Dialog.Speaker.Age),
                             ('Number of formants', self.Dialog.Speaker.NumFormants),
                             ('Formant ceiling', self.Dialog.Speaker.Ceiling),
-                            ('Vowel center', self.Dialog.Speaker.getCenter()),
-                            ('Average speaking rate', self.Dialog.Speaker.getAvgSpeakingRate())])
-            out = {'Preceding': self.getPreviousContext(),
-                    'Following': self.getFollowingContext(),
+                            ('Vowel center', self.Dialog.Speaker.get_center()),
+                            ('Average speaking rate', self.Dialog.Speaker.get_avg_speaking_rate())])
+            out = {'Preceding': self.get_previous_context(),
+                    'Following': self.get_following_context(),
                     'Word': str(self.WordType),
-                    'NFormants': self.getNFormants(),
-                    'Ceiling': self.getCeiling(),
+                    'NFormants': self.get_number_formants(),
+                    'Ceiling': self.get_ceiling(),
                     'TokenID': self.pk,
                     'Contextual': cont,
                     'Lexical':lex,
                     'Token':tok,
                     'Speaker':speak}
         else:
-            cont = OrderedDict([('Previous speaking rate', self.getPreviousSpeakingRate()),
-                        ('Following speaking rate', self.getFollowingSpeakingRate()),
-                        ('Previous distance to pause', self.getPrevDistToPause()),
-                        ('Following distance to pause', self.getFollDistToPause())])
+            cont = OrderedDict([('Previous speaking rate', self.get_previous_speaking_rate()),
+                        ('Following speaking rate', self.get_following_speaking_rate()),
+                        ('Previous distance to pause', self.get_prev_dist_to_pause()),
+                        ('Following distance to pause', self.get_foll_dist_to_pause())])
             tok = OrderedDict([('Dialog', str(self.Dialog)),
                             ('Buckeye category', str(self.Category))])
             speak = OrderedDict([('Speaker', str(self.Dialog.Speaker)),
@@ -1260,10 +1431,10 @@ class WordToken(caching.base.CachingMixin,models.Model):
                             ('Age', self.Dialog.Speaker.Age),
                             ('Number of formants', self.Dialog.Speaker.NumFormants),
                             ('Formant ceiling', self.Dialog.Speaker.Ceiling),
-                            ('Vowel center', self.Dialog.Speaker.getCenter()),
-                            ('Average speaking rate', self.Dialog.Speaker.getAvgSpeakingRate())])
-            out = {'Preceding': self.getPreviousContext(),
-                    'Following': self.getFollowingContext(),
+                            ('Vowel center', self.Dialog.Speaker.get_center()),
+                            ('Average speaking rate', self.Dialog.Speaker.get_avg_speaking_rate())])
+            out = {'Preceding': self.get_previous_context(window=10),
+                    'Following': self.get_following_context(window=10),
                     'Word': str(self.WordType),
                     'NFormants': self.Dialog.Speaker.NumFormants,
                     'Ceiling': self.Dialog.Speaker.Ceiling,

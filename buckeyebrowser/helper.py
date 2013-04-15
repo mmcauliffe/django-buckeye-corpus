@@ -3,7 +3,9 @@ import os
 
 from django.conf import settings
 
+
 FILLERS = set(['uh','um','okay','yes','yeah','oh','heh','yknow','um-huh','uh-uh','uh-huh','uh-hum','mm-hmm'])
+
 
 def fetch_buckeye_resource(uri):
     path = os.path.join(settings.BUCKEYE_ROOT,uri)

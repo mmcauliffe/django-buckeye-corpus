@@ -37,7 +37,7 @@ class SegmentInline(admin.TabularInline):
 class WordTokenAdmin(admin.ModelAdmin):
     model = WordToken
     inlines = [SegmentInline]
-    list_display = ('WordType','Begin','End','Category','Dialog','DialogPart','getFollowingWord')
+    list_display = ('WordType','Begin','End','Category','Dialog','DialogPart','get_following_word')
     list_filter = (('Category',DropDownFilter)
                    ,('Dialog',DropDownFilter))
     search_fields = ['WordType__Label']
@@ -51,16 +51,7 @@ admin.site.register(SegmentType, SegmentTypeAdmin)
 
 class WordTypeAdmin(admin.ModelAdmin):
     model = WordType
-    list_display = ('Label','getUR')
+    list_display = ('Label','get_UR')
 
 admin.site.register(WordType, WordTypeAdmin)
 
-#class SynSemCaseAdmin(admin.ModelAdmin):
-    #model = SynSemCase
-    #list_display = ('verb','checked')
-    #list_filter = ('checked',)
-    #formfield_overrides = {
-        #models.ForeignKey: {'widget': forms.HiddenInput() }
-    #}
-
-#admin.site.register(SynSemCase, SynSemCaseAdmin)

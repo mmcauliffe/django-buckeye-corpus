@@ -21,7 +21,7 @@ from .helper import fetch_buckeye_resource,fetch_media_resource,loadFile
 logger = get_task_logger(__name__)
 
 @task()
-def loadSegments():
+def load_segments():
     logger.info("Loading segments...")
     segs = loadFile(fetch_buckeye_resource("SegmentInfo.txt"))
     ss = []
@@ -31,7 +31,7 @@ def loadSegments():
     logger.info("Loaded segments!")
 
 @task()
-def loadSpeakers():
+def load_speakers():
     logger.info("Loading speakers...")
     speakers = loadFile(fetch_buckeye_resource("SpeakerInfo.txt"))
     ss = []
@@ -41,7 +41,7 @@ def loadSpeakers():
     logger.info("Loaded speakers!")
 
 @task()
-def loadCategories():
+def load_categories():
     logger.info("Loading categories...")
     cats = loadFile(fetch_buckeye_resource("CategoryInfo.txt"))
     cs = []
@@ -53,9 +53,9 @@ def loadCategories():
 
 @task()
 def load_base():
-    job = TaskSet(tasks = [loadSegments.subtask(),
-                            loadCategories.subtask(),
-                            loadSpeakers.subtask(),])
+    job = TaskSet(tasks = [load_segments.subtask(),
+                            load_categories.subtask(),
+                            load_speakers.subtask(),])
 
 
 @task()
@@ -65,13 +65,13 @@ def load_dialogs():
         s.load_dialogs()
 
 @task()
-def doReset(logfilename):
+def do_reset(logfilename):
     call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
     res = chord((load_base.s()), load_dialogs.s())()
     res.get()
 
 @task()
-def combineResults(allout,wanted=None):
+def combine_results(allout,wanted=None):
     if not os.path.isdir(fetch_media_resource("Results/Buckeye")):
         os.mkdir(fetch_media_resource("Results/Buckeye"))
     if wanted is None:
@@ -87,45 +87,25 @@ def combineResults(allout,wanted=None):
                 f.write("\n")
 
 @task()
-def AnalyzeSpeaker(speaker,form):
+def analyze_speaker(speaker,form):
     logger.info("Begin analysis of %s" % str(speaker))
     logger.info("Process %s" % str(os.getpid()))
     out = speaker.analyze(form)
     logger.info("Got %s lines for %s" % (str(len(out)),str(speaker)))
+    wanted = form.get_wanted_fields()
     with open(fetch_media_resource("Results/Buckeye/"+str(speaker)+".txt"),'w') as f:
-        f.write("\t".join(out[0].keys()))
+        f.write("\t".join(wanted))
         f.write("\n")
         for l in out:
-            f.write("\t".join(map(str,l.values())))
+            f.write("\t".join([ str(l[x]) for x in wanted]))
             f.write("\n")
     logger.info("Completed analysis of %s" % str(speaker))
     return out
 
 @task()
-def doBasicAnalysis(form):
+def do_analysis(form):
     sp = [x for x in Speaker.objects.all() if str(x) != 's35']
-    if settings.DEBUG:
-        sp = Speaker.objects.filter(Number = 's03')
-        out = AnalyzeSpeaker.delay(sp[0],form)
-    else:
-        #for s in sp:
-        #    AnalyzeSpeaker.delay(s,form)
-        #job = group([AnalyzeSpeaker.s(speaker, form) for speaker in sp])
-        #job.apply_async(link=consolidateResultFiles.s())
-        res = chord((AnalyzeSpeaker.s(s, form) for s in sp), combineResults.s(wanted=form.get_wanted_fields()))()
+    #if settings.DEBUG:
+    #    sp = Speaker.objects.filter(Number = 's03')
+    res = chord((analyze_speaker.s(s, form) for s in sp), combine_results.s(wanted=form.get_wanted_fields()))()
 
-@task()
-def consolidateResultFiles():
-    outs = os.listdir(fetch_buckeye_resource("Results/Buckeye"))
-    head = False
-    with open(fetch_buckeye_resource("Results/Buckeye/allresults.txt"),'w') as allout:
-        for fn in outs:
-            with open(fetch_buckeye_resource("Results/Buckeye/%s"%fn),'r') as f:
-                curhead = False
-                for l in f:
-                    if not head:
-                        head = True
-                    elif not curhead:
-                        curhead = True
-                        continue
-                    allout.write(l)

@@ -23,6 +23,9 @@ class RedoSpecGramForm(forms.Form):
     ManualF1 = forms.FloatField(required=False,label='Manual F1')
     ManualF2 = forms.FloatField(required=False,label='Manual F2')
 
+class ResetCacheForm(forms.Form):
+    fields_to_reset = forms.CharField()
+
 class AnalysisForm(forms.Form):
     M_CHOICES = (('N','None'),
                 ('S','SSANOVA-style'),
@@ -69,6 +72,8 @@ class AnalysisForm(forms.Form):
                             ('D','Dialog'),)
     #FETCH_CHOICES = (('PrevSemPred','PrevSemPred'),
     #                'FollSemPred','FollSemPred')
+    SENSE_OPTIONS = (('Disambiguate','Disambiguate'),
+                    ('Default','Default'))
     measure = forms.CharField(label='Measure')
     measure.widget = forms.Select(choices=M_CHOICES)
     DispersionFromAH = forms.BooleanField(initial=False,required=False,label="Dispersion from a speaker's AH tokens")
@@ -96,6 +101,8 @@ class AnalysisForm(forms.Form):
     prev_sem_pred = forms.BooleanField(initial=True,required=False,label='Previous semantic predictability')
     foll_sem_pred = forms.BooleanField(initial=True,required=False,label='Following semantic predictability')
     pause_dist = forms.BooleanField(initial=True,required=False,label='Distance to pauses')
+    sense_options = forms.CharField(required=False,label='Word Sense')
+    sense_options.widget = forms.CheckboxSelectMultiple(choices=SENSE_OPTIONS)
     sem_pred_window = forms.CharField(required=False,label='Semantic predictability window')
     sem_pred_window.widget = forms.CheckboxSelectMultiple(choices=SEM_PRED_WINDOW)
     sem_pred_style = forms.CharField(required=False,label='Semantic predictability style')
@@ -106,7 +113,9 @@ class AnalysisForm(forms.Form):
 
     def get_wanted_fields(self):
         form = self.cleaned_data
-        wanted_fields =['Word','Token','Vowel','PrevCons','FollCons','Speaker']
+        wanted_fields =['Word','Token','Speaker']
+        if form['measure'] != 'N':
+            wanted_fields.extend(['Vowel','PrevCons','FollCons'])
         if form['segmentalDurations']:
             wanted_fields.extend(['VowDur','OtherDur'])
         if form['speakingRates']:
@@ -183,10 +192,11 @@ class AnalysisForm(forms.Form):
 
         for w in eval(form['sem_pred_window']):
             for s in eval(form['sem_pred_style']):
-                if form['prev_sem_pred']:
-                    wanted_fields.extend(['%sWindowPrev%sSemPred' %(w,s)])
-                if form['foll_sem_pred']:
-                    wanted_fields.extend(['%sWindowFoll%sSemPred' %(w,s)])
+                for d in eval(form['sense_options']):
+                    if form['prev_sem_pred']:
+                        wanted_fields.extend(['%s%sWindowPrev%sSemPred' %(d,w,s)])
+                    if form['foll_sem_pred']:
+                        wanted_fields.extend(['%s%sWindowFoll%sSemPred' %(d,w,s)])
         if form['pause_dist']:
             wanted_fields.extend(['DistFollPause','DistPrevPause'])
         if form['placeInDialog']:

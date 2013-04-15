@@ -7,7 +7,6 @@ buckeyebrowser/__init__.py
 buckeyebrowser/admin.py
 buckeyebrowser/forms.py
 buckeyebrowser/helper.py
-buckeyebrowser/managers.py
 buckeyebrowser/models.py
 buckeyebrowser/tasks.py
 buckeyebrowser/tests.py
