@@ -9,7 +9,7 @@ template_patterns = [
 
 setup(
     name='django-buckeye-corpus',
-    version='0.3.55',
+    version='0.3.56',
     author='Michael McAuliffe',
     author_email='michael.e.mcauliffe@gmail.com',
     url='http://pypi.python.org/pypi/django-buckeye-corpus/',

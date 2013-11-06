@@ -12,7 +12,7 @@ from django.db.models import Count,Sum,Q
 from django.core.exceptions import ObjectDoesNotExist
 
 from picklefield.fields import PickledObjectField
-import caching.base
+#import caching.base
 
 # Create your models here.
 
@@ -91,7 +91,7 @@ BAD_WORDS = ['okay','kinda','w','even','only','really','maybe','being','having',
             'mike','Adam','whatsoever','whatnot','wadi','ups','twos','twenty-one']
 MONOPHTHONGS = ['aa','ae','eh','ey','ih','iy','ow','uh','uw']
 
-class Speaker(caching.base.CachingMixin,models.Model):
+class Speaker(models.Model):
     """
     This is the class for speakers in the Buckeye Corpus.
 
@@ -112,7 +112,7 @@ class Speaker(caching.base.CachingMixin,models.Model):
     F2center = models.FloatField(blank=True,null=True)
     AvgSpeakingRate = models.FloatField(blank=True,null=True)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def __unicode__(self):
         return u'%s' % (self.Number,)
@@ -240,7 +240,7 @@ class Speaker(caching.base.CachingMixin,models.Model):
 
 
 
-class Dialog(caching.base.CachingMixin,models.Model):
+class Dialog(models.Model):
     """
     Model that allows for grouping words according the specific place
     they were spoken in
@@ -248,7 +248,7 @@ class Dialog(caching.base.CachingMixin,models.Model):
     Speaker = models.ForeignKey(Speaker)
     Number = models.CharField(max_length=10)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def __unicode__(self):
         return u'%s%s' % (self.Speaker,self.Number)
@@ -310,7 +310,7 @@ class Dialog(caching.base.CachingMixin,models.Model):
 
 
 
-class SegmentType(caching.base.CachingMixin,models.Model):
+class SegmentType(models.Model):
     """
     Model for capturing phonological information about segments.
     """
@@ -320,7 +320,7 @@ class SegmentType(caching.base.CachingMixin,models.Model):
     Nasal = models.BooleanField()
     Vowel = models.BooleanField()
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def is_syllabic(self):
         return self.Syllabic
@@ -346,7 +346,7 @@ class SegmentType(caching.base.CachingMixin,models.Model):
         durs = [x.End - x.Begin for x in qs]
         return sum(durs)/float(len(durs))
 
-class Underlying(caching.base.CachingMixin,models.Model):
+class Underlying(models.Model):
     """
     Many-to-many relation between words and their underlying/canonical
     segments.
@@ -358,7 +358,7 @@ class Underlying(caching.base.CachingMixin,models.Model):
     Ordering = models.IntegerField()
     Stressed = models.IntegerField(blank=True,null=True)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def get_stress_trans(self):
         """
@@ -372,7 +372,7 @@ class Underlying(caching.base.CachingMixin,models.Model):
     class Meta:
         ordering = ['Ordering']
 
-class SegmentToken(caching.base.CachingMixin,models.Model):
+class SegmentToken(models.Model):
     """
     Model for surface realizations of words.
     """
@@ -382,7 +382,7 @@ class SegmentToken(caching.base.CachingMixin,models.Model):
     End = models.FloatField()
     Stressed = models.NullBooleanField()
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def __unicode__(self):
         return u'%s' % unicode(self.SegmentType)
@@ -393,7 +393,7 @@ class SegmentToken(caching.base.CachingMixin,models.Model):
     def get_end(self):
         return self.End
 
-class Category(caching.base.CachingMixin,models.Model):
+class Category(models.Model):
     """
     Syntactic parts of speech for a given word token, as listed in the
     Buckeye Corpus materials.
@@ -405,7 +405,7 @@ class Category(caching.base.CachingMixin,models.Model):
     Description = models.CharField(max_length=250)
     CategoryType = models.CharField('Category type',max_length=100)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def is_content(self):
         """
@@ -419,7 +419,7 @@ class Category(caching.base.CachingMixin,models.Model):
     def __unicode__(self):
         return u'%s' % self.Label
 
-class PrevCondProbs(caching.base.CachingMixin,models.Model):
+class PrevCondProbs(models.Model):
     """
     Model for storing bigram probabilities for a word given its
     preceding word.
@@ -429,7 +429,7 @@ class PrevCondProbs(caching.base.CachingMixin,models.Model):
     Count = models.IntegerField(blank=True,null=True)
     Prob = models.FloatField(blank=True,null=True)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def get_prob(self):
         """
@@ -447,7 +447,7 @@ class PrevCondProbs(caching.base.CachingMixin,models.Model):
         self.save()
         return self.Prob
 
-class FollCondProbs(caching.base.CachingMixin,models.Model):
+class FollCondProbs(models.Model):
     """
     Model for storing bigram probabilities for a word given its
     following word.
@@ -457,7 +457,7 @@ class FollCondProbs(caching.base.CachingMixin,models.Model):
     Count = models.IntegerField(blank=True,null=True)
     Prob = models.FloatField(blank=True,null=True)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def get_prob(self):
         """
@@ -475,7 +475,7 @@ class FollCondProbs(caching.base.CachingMixin,models.Model):
         self.save()
         return self.Prob
 
-class WordType(caching.base.CachingMixin,models.Model):
+class WordType(models.Model):
     """
     Model for storing lexical information about word types in the corpus.
 
@@ -496,7 +496,7 @@ class WordType(caching.base.CachingMixin,models.Model):
     StressVowel = models.CharField(max_length=10,blank=True,null=True)
     Extra = PickledObjectField(null=True)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     def get_celex_info(self):
         """
@@ -755,7 +755,7 @@ class WordType(caching.base.CachingMixin,models.Model):
         return SPprob,BPprob
 
 
-class WordToken(caching.base.CachingMixin,models.Model):
+class WordToken(models.Model):
     SR = models.ManyToManyField(SegmentType,through=SegmentToken)
     Begin = models.FloatField()
     End = models.FloatField()
@@ -767,7 +767,7 @@ class WordToken(caching.base.CachingMixin,models.Model):
     SemanticInformation = PickledObjectField(null=True)
     CachedOutput = PickledObjectField(null=True)
 
-    objects = caching.base.CachingManager()
+    #objects = caching.base.CachingManager()
 
     class Meta:
         ordering = ['Dialog','DialogPart','Begin']
