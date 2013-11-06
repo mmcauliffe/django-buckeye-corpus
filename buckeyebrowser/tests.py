@@ -14,7 +14,7 @@ from .models import *
 
 class LoadingTest(TestCase):
     def test_load(self):
-        load_base.s()
+        load_base.delay()
         s = Speaker.objects.get(pk=1)
         self.assertEqual(s.pk,1)
 
