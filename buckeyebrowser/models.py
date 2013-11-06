@@ -37,7 +37,7 @@ else:
 from .helper import fetch_buckeye_resource,reorganize
 
 
-SEM_PRED = SemanticPredictabilityAnalyzer(ngram=True,use_idf=True)
+#SEM_PRED = SemanticPredictabilityAnalyzer(ngram=True,use_idf=True)
 
 
 GOOD_WORDS = ['back', 'bad', 'badge', 'bag', 'ball', 'bar', 'bare', 'base', 'bash', 'bass', 'bat', 'bath', 'beach', 'bean', 'bear', 'beat',
