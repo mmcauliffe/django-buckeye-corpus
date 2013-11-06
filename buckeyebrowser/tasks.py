@@ -65,10 +65,14 @@ def load_dialogs():
         s.load_dialogs()
 
 @task()
-def do_reset(logfilename):
-    call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
+def load_database():
     res = chord((load_base.s()), load_dialogs.s())()
     res.get()
+
+@task()
+def do_reset(logfilename):
+    call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
+    load_database()
 
 @task()
 def combine_results(allout,wanted=None):

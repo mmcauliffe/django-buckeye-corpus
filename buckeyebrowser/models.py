@@ -9,6 +9,7 @@ from collections import OrderedDict
 from django.db import models
 from django.conf import settings
 from django.db.models import Count,Sum,Q
+from django.core.exceptions import ObjectDoesNotExist
 
 from picklefield.fields import PickledObjectField
 import caching.base
@@ -16,7 +17,8 @@ import caching.base
 # Create your models here.
 
 
-from linghelper import DTW,SemanticPredictabilityAnalyzer,perl_get_semantic_predictability
+from linghelper import minEditDist#,SemanticPredictabilityAnalyzer,perl_get_semantic_predictability
+from linghelper.phonetics.vowels import analyze_vowel, extract_vowel
 from praatinterface import PraatLoader
 
 if 'phonostats' in settings.INSTALLED_APPS:
@@ -168,6 +170,26 @@ class Speaker(caching.base.CachingMixin,models.Model):
         files= os.listdir(fetch_buckeye_resource("Speakers/"+str(s)))
         dialogs = sorted(set([ f[3:5] for f in files]))
         Dialog.objects.bulk_create([ Dialog(Speaker=self,Number=d) for d in dialogs])
+
+    def measure_vowels(self):
+        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker')
+        words = words.filter(WordType__Label__regex = r'^[^{<]').filter(Dialog__Speaker=self)
+        for w in words:
+            w.set_stress_formants()
+
+
+    def remeasure_vowels(self):
+        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker')
+        words = words.filter(WordType__Label__regex = r'^[^{<]').filter(Dialog__Speaker=self)
+        measurements = {}
+        for w in words:
+            vow,foll,prec,begin,end = w.get_stressed_vowel_info()
+            if (vow,foll,prec) not in measurements:
+                measurements[(vow,foll,prec)] = []
+            measurements[(vow,foll,prec)].append({x: w.AcousticInformation[x] for x in ['F1','F2','B1','B2','VDur']})
+        means,covs = get_speaker_means(measurements)
+        for w in words:
+            w.set_stress_formants(speaker_means=means,speaker_covs=covs)
 
     def analyze(self,form):
         """
@@ -619,16 +641,14 @@ class WordType(caching.base.CachingMixin,models.Model):
         elif subset == 'dialog' and dialog is not None:
             base = base.filter(Dialog = dialog)
 
-        Freq = float(base.filter(WordType=self).count())/float(base.filter(~Q(Category__CategoryType='Other'),~Q(Category__CategoryType='Pause'),~Q(Category__CategoryType='Disfluency')).count())
-        Freq = math.log((Freq * 1000000)+1,10)
+        Freq = float(base.filter(WordType=self).count())/float(base.exclude(Category__CategoryType__in=['Other','Pause','Disfluency']).count())
+        Freq = math.log((Freq * 1000000),10)
         if subset=='all':
             self.Frequency = Freq
             self.save()
         return Freq
 
-    def get_NDs(self,subset='all',speaker=None,dialog=None):
-        if subset == 'all' and self.ND is not None and self.FWND is not None:
-            return self.ND,self.FWND
+    def get_neighbours(self):
         any_segment = '[A-Za-z]{1,2}'
         phones = map(str,self.UR.all())
         patterns = []
@@ -644,10 +664,19 @@ class WordType(caching.base.CachingMixin,models.Model):
             patt.append(any_segment)
             patt.extend(phones[i:])
             patterns.append('^'+' '.join(patt) +'$')
-        neighs = WordType.objects.filter(Label__regex="^[^{<]").extra(
+        patt = phones + [any_segment]
+        patterns.append('^'+' '.join(patt) +'$')
+        neighs = WordType.objects.filter(Label__regex="^[^{<]").exclude(pk=self.pk).extra(
                     where = [UR_LOOKUP],
                     params = ['|'.join(patterns)])
-        freqs = [ x.get_frequency(subset=subset,speaker=speaker,dialog=dialog) for x in neighs]
+        return neighs
+
+
+    def get_NDs(self,subset='all',speaker=None,dialog=None):
+        if subset == 'all' and self.ND is not None and self.FWND is not None:
+            return self.ND,self.FWND
+        freqs = [ x.get_frequency(subset=subset,speaker=speaker,dialog=dialog)
+                        for x in self.get_neighbours()]
         nd = sum([1 for x in freqs if x > 0])
         fwnd = sum(freqs)
         if subset == 'all':
@@ -734,13 +763,9 @@ class WordToken(caching.base.CachingMixin,models.Model):
     Category = models.ForeignKey(Category)
     Dialog = models.ForeignKey(Dialog)
     DialogPart = models.CharField(max_length=1)
-    StrVowelF1 = models.FloatField(blank=True,null=True)
-    StrVowelF2 = models.FloatField(blank=True,null=True)
-    PrevSemPred = models.FloatField(blank=True,null=True)
-    FollSemPred = models.FloatField(blank=True,null=True)
-    NumFormants = models.DecimalField('Number of formants',max_digits=4,decimal_places=1,blank=True,null=True)
-    Ceiling = models.IntegerField(blank=True,null=True)
-    Output = PickledObjectField(null=True)
+    AcousticInformation = PickledObjectField(null=True)
+    SemanticInformation = PickledObjectField(null=True)
+    CachedOutput = PickledObjectField(null=True)
 
     objects = caching.base.CachingManager()
 
@@ -749,31 +774,6 @@ class WordToken(caching.base.CachingMixin,models.Model):
 
     def __unicode__(self):
         return u'%s' % unicode(self.WordType)
-
-    def set_spec_variables(self,ceiling,numformants):
-        self.Ceiling = ceiling
-        self.NumFormants = numformants
-        self.save()
-
-    def get_number_formants(self):
-        if self.NumFormants is not None:
-            return self.NumFormants
-        return self.Dialog.Speaker.NumFormants
-
-    def get_ceiling(self):
-        if self.Ceiling is not None:
-            return self.Ceiling
-        return self.Dialog.Speaker.Ceiling
-
-    def get_stress_F1(self):
-        if self.StrVowelF1 is None:
-            self.set_stress_formants()
-        return self.StrVowelF1
-
-    def get_stress_F2(self):
-        if self.StrVowelF2 is None:
-            self.set_stress_formants()
-        return self.StrVowelF2
 
     def get_sense(self,disambiguate=True):
         if not disambiguate:
@@ -841,26 +841,49 @@ class WordToken(caching.base.CachingMixin,models.Model):
             self.save()
         return sp
 
-    def set_stress_formants(self,formants=None):
-        if formants is not None:
-            self.StrVowelF1 = formants[0]
-            self.StrVowelF2 = formants[1]
+    def set_stress_formants(self, style='fave',
+                                speaker_means=None,speaker_covs = None):
+        if self.AcousticInformation is None:
+            self.AcousticInformation = {}
+        elif style == 'fave':
+            #extract stress vowel wave
+            temp_filename = fetch_temp_filename('%d-temp.wav' % self.id)
+            vowel, foll_seg, prec_seg, begin, end = self.get_stressed_vowel_info()
+            dialog_file = self.get_dialog_path()
+            extract_vowel(dialog_file,begin,end,temp_filename)
+            formants = analyze_vowel(temp_filename, vowel = vowel,
+                                            measurement = 'mahalanobis',
+                                            prec_seg = prec_seg, foll_seg = foll_seg,
+                                            speaker_gender = self.Dialog.Speaker.Gender,
+                                            means = speaker_means, covs = speaker_covs)
+            os.remove(temp_filename)
+            self.AcousticInformation['F1'],
+            self.AcousticInformation['F2'],
+            self.AcousticInformation['B1'],
+            self.AcousticInformation['B2'] = formants.get_point_measurement()
+            self.AcousticInformation['F1C1'],
+            self.AcousticInformation['F1C2'],
+            self.AcousticInformation['F1C3'] = formants.get_DCT('F1')
+            self.AcousticInformation['F2C1'],
+            self.AcousticInformation['F2C2'],
+            self.AcousticInformation['F2C3'] = formants.get_DCT('F2')
             self.save()
-        else:
-            p = PraatLoader(settings.PRAAT_PATH,debug=settings.DEBUG)
-            path = str(self.Dialog.Speaker) + "/" + str(self.Dialog)+self.DialogPart
-            begin,end = self.get_stressed_vowel_info()
-            ceiling = self.get_ceiling()
-            nformants = self.get_number_formants()
-            out = p.get_formants(fetch_buckeye_resource("Speakers/"+path+'.wav'),begin,end,nformants,ceiling)
-            dur = float(end)-float(begin)
-            if dur > 0.0 and len(out) > 0:
-                fones = [x['F1(Hz)'] for x in out if x['F1(Hz)'] != '--undefined--' and float(x['time(s)'])/dur> 0.25 and float(x['time(s)'])/dur < 0.75]
-                ftwos = [x['F2(Hz)'] for x in out if x['F2(Hz)'] != '--undefined--' and float(x['time(s)'])/dur> 0.25 and float(x['time(s)'])/dur < 0.75]
-                if len(fones) > 0 and len(ftwos) > 0:
-                    self.StrVowelF1 = sum(map(float,fones))/float(len(fones))
-                    self.StrVowelF2 = sum(map(float,ftwos))/float(len(ftwos))
-                    self.save()
+
+        #else:
+            #p = PraatLoader(settings.PRAAT_PATH,debug=settings.DEBUG)
+            #path = str(self.Dialog.Speaker) + "/" + str(self.Dialog)+self.DialogPart
+            #begin,end = self.get_stressed_vowel_info()
+            #ceiling = self.get_ceiling()
+            #nformants = self.get_number_formants()
+            #out = p.get_formants(fetch_buckeye_resource("Speakers/"+path+'.wav'),begin,end,nformants,ceiling)
+            #dur = float(end)-float(begin)
+            #if dur > 0.0 and len(out) > 0:
+                #fones = [x['F1(Hz)'] for x in out if x['F1(Hz)'] != '--undefined--' and float(x['time(s)'])/dur> 0.25 and float(x['time(s)'])/dur < 0.75]
+                #ftwos = [x['F2(Hz)'] for x in out if x['F2(Hz)'] != '--undefined--' and float(x['time(s)'])/dur> 0.25 and float(x['time(s)'])/dur < 0.75]
+                #if len(fones) > 0 and len(ftwos) > 0:
+                    #self.StrVowelF1 = sum(map(float,fones))/float(len(fones))
+                    #self.StrVowelF2 = sum(map(float,ftwos))/float(len(ftwos))
+                    #self.save()
 
     def has_stress(self):
         for s in self.segmenttoken_set.all():
@@ -872,20 +895,22 @@ class WordToken(caching.base.CachingMixin,models.Model):
     def get_SR(self):
         return ".".join([unicode(s) for s in self.SR.all()])
 
-    def get_stressed_vowel_info(self,cvc=True):
-        if cvc:
-            qs = self.segmenttoken_set.filter(SegmentType__Vowel=True)
-            if len(qs) > 0:
-                return qs[0].Begin,qs[0].End
-            else:
-                return 0.0,0.0
+    def get_stressed_vowel_info(self):
         if self.has_stress():
             qs = self.segmenttoken_set.get(Stressed=True)
-            print qs
-            return qs.Begin,qs.End
+            try:
+                foll_seg = SegmentToken.objects.get(Begin=qs.End)
+                foll_seg = str(foll_seg.SegmentType)
+            except ObjectDoesNotExist:
+                foll_seg = ''
+            try:
+                prec_seg = SegmentToken.objects.get(End = qs.Begin)
+            except ObjectDoesNotExist:
+                prec_seg = ''
+            return str(qs),str(foll_seg),str(prec_seg),qs.Begin,qs.End
         ur = self.WordType.underlying_set.all()
         sr = self.segmenttoken_set.all()
-        score,mapping = DTW(map(str,[x.SegmentType for x in ur]),map(str,[x.SegmentType for x in sr]),distOnly=False)
+        score,mapping = minEditDist(map(str,[x.SegmentType for x in ur]),map(str,[x.SegmentType for x in sr]),distOnly=False)
         ui = 0
         sj = 0
         for m in mapping:
@@ -903,18 +928,6 @@ class WordToken(caching.base.CachingMixin,models.Model):
     def get_dialog_path(self):
         path = fetch_buckeye_resource("Speakers/"+str(self.Dialog.Speaker) + "/" + str(self.Dialog)+self.DialogPart + ".wav")
         return path
-
-    def get_acoustic_info(self):
-        sr = self.segmenttoken_set.all()
-        begin = None
-        for s in xrange(len(sr)):
-            if sr[s].SegmentType.is_vowel():
-                prevSound = sr[s-1].SegmentType.Label
-                vow = sr[s].SegmentType.Label
-                follSound = sr[s+1].SegmentType.Label
-                begin = sr[s].Begin
-                end = sr[s].End
-        return begin,end,vow,prevSound,follSound
 
     def get_previous_word(self):
         if self.DialogPart == 'b' and self.Begin == 0.0:
