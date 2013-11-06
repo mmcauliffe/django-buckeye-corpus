@@ -15,6 +15,8 @@ from .models import *
 class LoadingTest(TestCase):
     def test_load(self):
         load_base.s()
+        s = Speaker.objects.get(pk=1)
+        self.assertEqual(s.pk,1)
 
 #class BuckeyeTest(TestCase):
     #fixtures = ['buckeyebrowser_testdata.json']
