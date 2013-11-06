@@ -18,9 +18,9 @@ setup(
     long_description=open('README.md').read(),
     install_requires=['Django',
                     'django-celery',
-                    'python-praat-scripts',
+                    'git+https://github.com/mmcauliffe/python-praat-scripts',
                     'pillow',
-                    'linguistic-helper-functions',
+                    'git+https://github.com/mmcauliffe/linguistic-helper-functions',
                     'django-picklefield'],
     packages=packages,
     package_data=dict( (package_name, template_patterns)
