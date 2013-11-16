@@ -71,7 +71,7 @@ def load_database():
 
 @task()
 def do_reset(logfilename):
-    call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
+    #call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
     load_database()
 
 @task()
