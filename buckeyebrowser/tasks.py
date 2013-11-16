@@ -10,6 +10,7 @@ import math
 from celery import task,chord,group
 from celery.signals import task_success
 from celery.utils.log import get_task_logger
+from celery.task.sets import TaskSet
 
 from django.db.models import Q
 from django.core.management import call_command
