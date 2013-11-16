@@ -52,11 +52,6 @@ def load_categories():
     logger.info("Loaded categories!")
 
 
-@task()
-def load_base():
-    job = TaskSet(tasks = [load_segments.subtask(),
-                            load_categories.subtask(),
-                            load_speakers.subtask(),])
 
 
 @task()
@@ -67,7 +62,9 @@ def load_dialogs():
 
 @task()
 def load_database():
-    res = chord((load_base.s()), load_dialogs.s())()
+    res = chord((load_segments.subtask(),
+                            load_categories.subtask(),
+                            load_speakers.subtask()), load_dialogs.s())()
     res.get()
 
 @task()
