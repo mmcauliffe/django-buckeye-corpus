@@ -62,9 +62,9 @@ def load_dialogs():
 
 @task()
 def load_database():
-    res = chord((load_segments.subtask(),
+    res = chord(load_segments.subtask(),
                             load_categories.subtask(),
-                            load_speakers.subtask()), load_dialogs.s())
+                            load_speakers.subtask())(load_dialogs.s())
     res.get()
 
 @task()
