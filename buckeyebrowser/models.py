@@ -235,7 +235,7 @@ class Speaker(models.Model):
         """
         Get absolute file path to a speaker's resources.
         """
-        return fetch_buckeye_resource("Speakers/"+unicode(self))
+        return fetch_buckeye_resource("Speakers/"+str(self))
 
 
 
@@ -385,7 +385,7 @@ class SegmentToken(models.Model):
     #objects = caching.base.CachingManager()
 
     def __str__(self):
-        return u'%s' % unicode(self.SegmentType)
+        return u'%s' % str(self.SegmentType)
 
     class Meta:
         ordering = ['Begin']
@@ -773,7 +773,7 @@ class WordToken(models.Model):
         ordering = ['Dialog','DialogPart','Begin']
 
     def __str__(self):
-        return u'%s' % unicode(self.WordType)
+        return u'%s' % str(self.WordType)
 
     def get_sense(self,disambiguate=True):
         if not disambiguate:
@@ -893,7 +893,7 @@ class WordToken(models.Model):
 
 
     def get_SR(self):
-        return ".".join([unicode(s) for s in self.SR.all()])
+        return ".".join([str(s) for s in self.SR.all()])
 
     def get_stressed_vowel_info(self):
         if self.has_stress():
