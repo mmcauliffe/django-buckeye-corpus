@@ -51,9 +51,6 @@ def load_categories():
     logger.info("Loaded categories!")
 
 
-@task()
-def load_base():
-    job = Group()
 
 
 @task()
@@ -62,17 +59,14 @@ def load_dialogs():
     for s in sp:
         s.load_dialogs()
 
+
 @task()
-def load_database():
+def do_reset(logfilename):
+    #call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
     res = chord([load_segments.subtask(),
                             load_categories.subtask(),
                             load_speakers.subtask()])(load_dialogs.s())
     res.get()
-
-@task()
-def do_reset(logfilename):
-    call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
-    load_database()
 
 @task()
 def combine_results(allout,wanted=None):
