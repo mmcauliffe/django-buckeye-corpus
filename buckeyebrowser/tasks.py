@@ -63,9 +63,9 @@ def load_dialogs():
 @task()
 def do_reset(logfilename):
     #call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
-    res = chord([load_segments.subtask(),
-                            load_categories.subtask(),
-                            load_speakers.subtask()])(load_dialogs.s())
+    res = chord([load_segments.si(),
+                            load_categories.si(),
+                            load_speakers.si()])(load_dialogs.s())
     res.get()
 
 @task()
