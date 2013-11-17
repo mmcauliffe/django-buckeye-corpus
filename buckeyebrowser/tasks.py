@@ -51,13 +51,14 @@ def load_categories():
     logger.info("Loaded categories!")
 
 
-
+@task()
+def load_speaker(speaker):
+    speaker.load_dialogs()
 
 @task()
 def load_dialogs():
     sp = Speaker.objects.all()
-    for s in sp:
-        s.load_dialogs()
+    job = group(load_speaker.si(s) for s in sp)
 
 
 @task()
