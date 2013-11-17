@@ -59,6 +59,8 @@ def load_speaker(speaker):
 def load_dialogs():
     sp = Speaker.objects.all()
     job = group(load_speaker.si(s) for s in sp)
+    res = job()
+    res.get()
 
 
 @task()
