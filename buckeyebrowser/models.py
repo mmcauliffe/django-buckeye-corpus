@@ -167,7 +167,7 @@ class Speaker(models.Model):
         Find and create all dialogs for a speaker from the Buckeye
         Corpus materials
         """
-        files= os.listdir(fetch_buckeye_resource("Speakers/"+str(self)))
+        files= os.listdir(fetch_buckeye_resource("Speakers/"+unicode(self)))
         dialogs = sorted(set([ f[3:5] for f in files]))
         Dialog.objects.bulk_create([ Dialog(Speaker=self,Number=d) for d in dialogs])
 
