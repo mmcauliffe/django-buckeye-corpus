@@ -13,7 +13,7 @@ from .models import *
 from .utils import load_segments_from_file,load_speakers_from_file,load_categories_from_file
 
 class LoadingTest(TestCase):
-    def setUp():
+    def setUp(self):
         load_segments_from_file()
         load_speakers_from_file()
         load_categories_from_file()
