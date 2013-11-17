@@ -7,7 +7,6 @@ Replace this with more appropriate tests for your application.
 
 from django.test import TestCase
 
-from .tasks import load_base
 #from linghelper import DTW,getSemanticRelatedness
 
 from .models import *
