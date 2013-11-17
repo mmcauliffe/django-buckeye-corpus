@@ -114,7 +114,7 @@ class Speaker(models.Model):
 
     #objects = caching.base.CachingManager()
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s' % (self.Number,)
 
     def get_AH_center(self):
@@ -167,7 +167,7 @@ class Speaker(models.Model):
         Find and create all dialogs for a speaker from the Buckeye
         Corpus materials
         """
-        files= os.listdir(fetch_buckeye_resource("Speakers/"+unicode(self)))
+        files= os.listdir(fetch_buckeye_resource("Speakers/"+str(self)))
         dialogs = sorted(set([ f[3:5] for f in files]))
         Dialog.objects.bulk_create([ Dialog(Speaker=self,Number=d) for d in dialogs])
 
@@ -250,7 +250,7 @@ class Dialog(models.Model):
 
     #objects = caching.base.CachingManager()
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s%s' % (self.Speaker,self.Number)
 
     def get_word_files(self):
@@ -334,7 +334,7 @@ class SegmentType(models.Model):
     def is_vowel(self):
         return self.Vowel
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s' % (self.Label,)
 
     def get_average_dur(self):
@@ -384,7 +384,7 @@ class SegmentToken(models.Model):
 
     #objects = caching.base.CachingManager()
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s' % unicode(self.SegmentType)
 
     class Meta:
@@ -416,7 +416,7 @@ class Category(models.Model):
             return True
         return False
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s' % self.Label
 
 class PrevCondProbs(models.Model):
@@ -525,7 +525,7 @@ class WordType(models.Model):
             self.save()
         return self.Extra
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s' % self.Label
 
     def is_acceptable(self):
@@ -772,7 +772,7 @@ class WordToken(models.Model):
     class Meta:
         ordering = ['Dialog','DialogPart','Begin']
 
-    def __unicode__(self):
+    def __str__(self):
         return u'%s' % unicode(self.WordType)
 
     def get_sense(self,disambiguate=True):
