@@ -17,37 +17,26 @@ from django.conf import settings
 
 from .models import WordType,WordToken,Dialog,SegmentType,SegmentToken,Speaker,Category,Underlying
 from .helper import fetch_buckeye_resource,fetch_media_resource,loadFile
+from .utils import load_segments_from_file,load_speakers_from_file,load_categories_from_file
 
 logger = get_task_logger(__name__)
 
 @task()
 def load_segments():
     logger.info("Loading segments...")
-    segs = loadFile(fetch_buckeye_resource("SegmentInfo.txt"))
-    ss = []
-    for s in segs:
-        ss.append(SegmentType(Label=s['Label'],Syllabic=bool(int(s['Syllabic'])),Obstruent=bool(int(s['Obstruent'])),Nasal=bool(int(s['Nasal'])),Vowel=bool(int(s['Vowel']))))
-    SegmentType.objects.bulk_create(ss)
+    load_segments_from_file()
     logger.info("Loaded segments!")
 
 @task()
 def load_speakers():
     logger.info("Loading speakers...")
-    speakers = loadFile(fetch_buckeye_resource("SpeakerInfo.txt"))
-    ss = []
-    for s in speakers:
-        ss.append(Speaker(Number=s['Number'],Age=s['Age'],Gender=s['Gender'],NumFormants=s['NFormants'],Ceiling=s['Ceiling']))
-    Speaker.objects.bulk_create(ss)
+    load_speakers_from_file()
     logger.info("Loaded speakers!")
 
 @task()
 def load_categories():
     logger.info("Loading categories...")
-    cats = loadFile(fetch_buckeye_resource("CategoryInfo.txt"))
-    cs = []
-    for s in cats:
-        cs.append(Category(Label=s['Label'],Description=s['Description'],CategoryType=s['Type']))
-    Category.objects.bulk_create(cs)
+    load_categories_from_file()
     logger.info("Loaded categories!")
 
 

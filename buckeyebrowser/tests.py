@@ -11,12 +11,17 @@ from .tasks import load_base
 #from linghelper import DTW,getSemanticRelatedness
 
 from .models import *
+from .utils import load_segments_from_file,load_speakers_from_file,load_categories_from_file
 
 class LoadingTest(TestCase):
+    def setUp():
+        load_segments_from_file()
+        load_speakers_from_file()
+        load_categories_from_file()
     def test_load(self):
-        load_base.delay()
         s = Speaker.objects.get(pk=1)
         self.assertEqual(s.pk,1)
+        s.load_dialogs()
 
 #class BuckeyeTest(TestCase):
     #fixtures = ['buckeyebrowser_testdata.json']
