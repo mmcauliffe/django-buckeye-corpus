@@ -53,7 +53,9 @@ def load_categories():
 
 @task()
 def load_speaker(speaker):
+    logger.info("Begin loading of %s" % str(speaker))
     speaker.load_dialogs()
+    logger.info("Completed loading of %s" % str(speaker))
 
 @task()
 def load_dialogs():
