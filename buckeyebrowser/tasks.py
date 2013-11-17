@@ -10,7 +10,6 @@ import math
 from celery import task,chord,group
 from celery.signals import task_success
 from celery.utils.log import get_task_logger
-from celery.task.sets import TaskSet
 
 from django.db.models import Q
 from django.core.management import call_command
@@ -52,6 +51,9 @@ def load_categories():
     logger.info("Loaded categories!")
 
 
+@task()
+def load_base():
+    job = Group()
 
 
 @task()
@@ -62,14 +64,14 @@ def load_dialogs():
 
 @task()
 def load_database():
-    res = chord([load_segments.s(),
-                            load_categories.s(),
-                            load_speakers.s()])(load_dialogs.s())
+    res = chord([load_segments.subtask(),
+                            load_categories.subtask(),
+                            load_speakers.subtask()])(load_dialogs.s())
     res.get()
 
 @task()
 def do_reset(logfilename):
-    #call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
+    call_command('reset','buckeyebrowser', interactive=False,verbosity=0)
     load_database()
 
 @task()
