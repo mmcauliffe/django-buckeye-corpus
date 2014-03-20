@@ -4,25 +4,28 @@ import re
 from PIL import Image
 import math
 import copy
+import pickle
 from collections import OrderedDict
+from picklefield.fields import PickledObjectField
 
 from django.db import models
 from django.conf import settings
 from django.db.models import Count,Sum,Q
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist,MultipleObjectsReturned
 
-from picklefield.fields import PickledObjectField
 #import caching.base
 
 # Create your models here.
 
 
 from linghelper import minEditDist#,SemanticPredictabilityAnalyzer,perl_get_semantic_predictability
-from linghelper.phonetics.vowels import analyze_vowel, extract_vowel
+from linghelper.phonetics.vowels import analyze_vowel, extract_vowel,get_speaker_means
+from linghelper.phonetics.similarity.envelope import envelope_similarity,calc_envelope
 from praatinterface import PraatLoader
 
-if 'phonostats' in settings.INSTALLED_APPS:
-    from phonostats.utils import getNeighCount,getPhonotacticProb,guessStress
+from linghelper.phonology.stress import guessStress
+#if 'phonostats' in settings.INSTALLED_APPS:
+#    from phonostats.utils import getNeighCount,getPhonotacticProb,guessStress
 
 if 'celex' in settings.INSTALLED_APPS:
     from celex.utils import categorize_words,get_lexical_info,lookupCat
@@ -34,7 +37,7 @@ else:
     from .helper import pg_ur_string_lookup as UR_LOOKUP
     from .helper import pg_speaker_center as SPEAKER_SQL
 
-from .helper import fetch_buckeye_resource,reorganize
+from .helper import fetch_buckeye_resource,reorganize,fetch_temp_resource
 
 
 #SEM_PRED = SemanticPredictabilityAnalyzer(ngram=True,use_idf=True)
@@ -75,7 +78,7 @@ GOOD_WORDS = ['back', 'bad', 'badge', 'bag', 'ball', 'bar', 'bare', 'base', 'bas
                  'whole', 'wick', 'wide', 'wife', 'win', 'wine', 'wing', 'wise', 'wish', 'woke', 'womb', 'wood', 'word', 'wore', 'work',
                  'worse', 'wreck', 'wright', 'write', 'wrong', 'wrote', 'wrought', 'year', 'yell', 'young', 'youth', 'zip']
     #Remove: pull, full, bull, real
-BAD_WORDS = ['okay','kinda','w','even','only','really','maybe','being','having','awhile','also','was',
+BAD_WORDS = set(['okay','kinda','w','even','only','really','maybe','being','having','awhile','also','was',
             'is','are','am','a','i','the','and','to','that','of','you','like','in','they','but','so',
             'just','have','my','for','know','think','do','on','or','mean','not','be','with','because',
             'well','what','all','if','this','out','at','get','about','them','go','when','me','she',
@@ -88,7 +91,80 @@ BAD_WORDS = ['okay','kinda','w','even','only','really','maybe','being','having',
             'ones','seven','huh','s','nine','few','thousand','anybody','somebody','everybody','hafta','someone',
             'yep','hey','anymore','kinda','seventy','yet','against','anyway','forty','ninety','wow','gotta',
             'such','somewhere','may','bush','gore','there','very','back','ever','q','x','ex','yes','ted',
-            'mike','Adam','whatsoever','whatnot','wadi','ups','twos','twenty-one']
+            'mike','Adam','whatsoever','whatnot','wadi','ups','twos','twenty-one','p','r','l',
+            'b','c','e','g','h','j','k','K','m','n','p','t','v','y','z','ag','al','aw','bo','bs',
+            'co','da','ec','ed','eh','el','em','er','ew','ha','hi','hm','ho','hu','ih','la','lo',
+            'mm','ok','ow','se','th','ya','alabama','africa','african','akron','alaska','albany',
+            'america','american','americans','anzio','arab','archie','arlington','asian','ashland'
+            ,'athens','atlanta','australia','august','bavarians','belgium','bernice','bethel',
+            'boston','bradley','broadway','bruge','buffalo','california','canada','carolina',
+            'catholic','catholics','chicago','chinese','christ','christian','bible','christianity'
+            ,'christians','christmas','christopher','cincinnati','cleveland','clinton',
+            'clintonville','coleman','colin','colorado','columbine','columbus','cuba','dallas',
+            'dayton','december','delaware','democrat','democrats','detroit','devon','disney',
+            'dorothy','ohio','york','sunday','english','worthington','french','sixteen','florida',
+            'vietnam','sixth','northland','eleven','twenty','dublin','eighth','republican',
+            'fifth','england','ninth','sixty','german','bob','eew','ann','amy','aha','etc','iis',
+            'hmm','meg','ooh','lee','ima','lan','las','los','lou','med','nah','mrs','mhm','phd',
+            'san','tom','taj','ugh','yay','yuk','yup','ymca','ural','unix','rosa','pisa','rome',
+            'pope','nike','neil','palo','penn','miha','mary','mark','luke','lisa','levy','lima',
+            'kirk','kira','kong','kent','karl','june','july','john','joey','jedi','jedd','izod',
+            'jack','jane','iowa','iuka','hyde','hong','hers','greg','gosh','fred','eyor','earl',
+            'drew','dodd','cosi','coca','cola','cher','byrd','cahs','bing','alta','alps','asia',
+            'arlo','ames','yours','ynkow','yadda','xerox','wolff','whoom','wayne','vader','useta',
+            'uh-oh','texas','tammy','teddy','tahoe','spitz','spiel','spain','sorta','smith',
+            'shawn','sears','scott','satan','sarah','santa','sammy','sally','rosie','roman',
+            'roger','robin','riker','reese','Ralph','rabin','qwest','posi-','pixar','peter','paris',
+            'peggy','padre','orrin','omaha','nikes','nixon','nancy','miami','megan','mahal','makee',
+            'louis','lotta','lordy','logan','linux','linda','legos','kawai','kathy','julie','joyce',
+            'jason','jesus','jesse','jerry','james','janet','janie','japan','italy','islam','irish',
+            'jacob','ixnay','india','idaho','hyatt','howdy','harry','hasta','hayes','gorka','frank',
+            'flint','floyd','exper','emory','elian','ellen','elvis','derek','darth','david','danny',
+            'devon','doody','czech','croix','Daddy','daisy','daffy','colin','chris','china',
+            'carol','byrds','bronx','bravo','bobby','bingo','betty','amish','toledo','tulsan',
+            'venice','vienna','winnie','thomas','theirs','teater','tamara','taylor','tarzan',
+            'sydney','smyrna','shuman','senate','russia','sarcom','scioto','schott','ruston',
+            'romaro','rommel','robbie','rhodes','reggae','orwell','oregon','oxleys','newark',
+            'munich','naples','myrtle','mulder','muchos','mozart','moscow','morris','mormon',
+            'monica','morley','monday','mexico','Maslow','mccain','marion','lompoc','malone',
+            'lennox','lassie','lamaze','keitel','kenyon','joanne','juliet','joseph','johnny',
+            'jewish','jessie','jasper','jansen','jalena','jacobs','israel','hum-um','im-ing',
+            'hudson','huh-uh','howser','hitler','heston','harold','hawaii','harvey','guthry',
+            'grimes','greece','gospel','george','france','french','eurail','faggot','eugene',
+            'europe','elyria','edward','easton','easter','dublin','dundee','doogie','denise',
+            'dekalb','crosby','cooper','coulda','cirrus','carson','cayman','cancun','brazil',
+            'beulah','bexley','bibles','barney','antrum','arnold','x-files','yitzhak','winfrey',
+            'wyandot','william','Voyager','walmart','winston','wooster','thurber','tootsie',
+            'tuesday','theresa','sudeten','stergle','stooges','spanish','spandex','solaris',
+            'sixties','sixteen','slurpie','sinatra','simpson','siberia','siebert','shoulda',
+            'schnook','scooney','russian','roberta','rozutti','pokedex','pokemon','polaris',
+            'paterno','ohioian','oberlin','orlando','orleans','october','niagra','nirvana',
+            'muslims','mormons','montana','merrill','mitzvah','michael','mexican','matthew',
+            'mauldin','maynard','madison','lincoln','liebert','lovejoy','leveque','lazarus',
+            'kimonos','kenisha','kwaanza','lashuka','kennedy','jamilia','johnnie','judaism',
+            'jamaica','january','janeway','janelle','jackson','italian','ireland','indiana',
+            'indians','hungary','hoffman','holland','harvard','harriet','heather','georgia',
+            'godsake','germany','germans','gahanna','florida','femalee','ephraim','english',
+            'fawcett','eneepee','emante','Ellison','Ellimen','detroit','daytona','cosgray',
+            'comfest','charlie','buckeye','bristol','british','bradley','beverly','barbara',
+            'arizona','antioch','anthony','anorism','atlanta','amherst','whitesox','wesleyan',
+            'victoria','vietcong','themself','stanford','simpsons','samantha','salvador',
+            'russians','richmond','richland','richards','rochelle','rockwell','pentagon',
+            'portland','murfield','oklahoma','november','nicholas','netstock','nazareth',
+            'nebraska','mongolia','mossberg','michelle','mexicans','mid-ohio','michigan',
+            'missouri','mcguffey','mcgovern','maverick','masillon','maryland','mackinaw',
+            'lutheran','lewinsky','kruschev','jennifer','japanese','janitrol','honolulu',
+            'hilliard','hispanic','hawaiian','galberth','futurama','franklin','florence',
+            'february','etcetera','european','egyptian','einstein','Delaware','cuyahoga',
+            'davidson','delaware','december','columbus','chanukah','Catholic','c.a.h.s.',
+            'canberra','buddhism','budapest','brooklyn','brittany','atlantic','arkansas',
+            'zollinger','zimbalist','wyandotte','wisconsin','watergate','wadsworth','vancouver',
+            'twizzlers','unitarian','tennessee','skywalker','skinheads','shawshank','september',
+            'seventies','seventeen','princeton','pataskala','otterbein','owensboro','orangello',
+            'olentagy','mussolini','microsoft','methodist','macintosh','mackenzie','louisiana',
+            'lancaster','la-dee-da','krushchev','kaczynski','kilbourne','jefferson','johnstown',
+            'indianola','henderson','hillsboro','hilliards','holocaust','halloween','francisco',
+            ])
 MONOPHTHONGS = ['aa','ae','eh','ey','ih','iy','ow','uh','uw']
 
 class Speaker(models.Model):
@@ -171,23 +247,39 @@ class Speaker(models.Model):
         dialogs = sorted(set([ f[3:5] for f in files]))
         Dialog.objects.bulk_create([ Dialog(Speaker=self,Number=d) for d in dialogs])
 
-    def measure_vowels(self):
-        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker')
+    def measure_vowels(self,pk = 0):
+        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker','Category')
         words = words.filter(WordType__Label__regex = r'^[^{<]').filter(Dialog__Speaker=self)
+        words = words.filter(Category__CategoryType = 'Content').order_by('pk')
+        words = words.filter(pk__gt = pk)
         for w in words:
-            w.set_stress_formants()
+            try:
+                w.set_stress_formants()
+            except Exception as e:
+                print(w.pk)
+                raise(e)
 
-
-    def remeasure_vowels(self):
-        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker')
+    def get_means_covs(self):
+        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker','Category')
         words = words.filter(WordType__Label__regex = r'^[^{<]').filter(Dialog__Speaker=self)
+        words = words.filter(Category__CategoryType = 'Content').filter(AcousticInformation__isnull=False)
         measurements = {}
         for w in words:
             vow,foll,prec,begin,end = w.get_stressed_vowel_info()
             if (vow,foll,prec) not in measurements:
                 measurements[(vow,foll,prec)] = []
+            if 'VDur' not in w.AcousticInformation:
+                w.AcousticInformation['VDur'] = end - begin
             measurements[(vow,foll,prec)].append({x: w.AcousticInformation[x] for x in ['F1','F2','B1','B2','VDur']})
         means,covs = get_speaker_means(measurements)
+        return means,covs
+
+
+    def remeasure_vowels(self):
+        means,covs = self.get_means_covs()
+        words = WordToken.objects.select_related('WordType','Dialog','Dialog__Speaker','Category')
+        words = words.filter(WordType__Label__regex = r'^[^{<]').filter(Dialog__Speaker=self)
+        words = words.filter(Category__CategoryType = 'Content')
         for w in words:
             w.set_stress_formants(speaker_means=means,speaker_covs=covs)
 
@@ -226,10 +318,9 @@ class Speaker(models.Model):
             #    print allout[-1]
         return allout
 
-    def load_dialogs(self):
-        self.create_dialogs()
+    def load_wordtokens(self):
         for d in Dialog.objects.filter(Speaker = self):
-            d.load_in()
+            d.load_wordtokens()
 
     def get_path(self):
         """
@@ -253,60 +344,198 @@ class Dialog(models.Model):
     def __str__(self):
         return u'%s%s' % (self.Speaker,self.Number)
 
+    def get_total_time(self):
+        tokens = self.wordtoken_set.all()
+        first_part = tokens.filter(DialogPart = 'a').last()
+        time = first_part.End
+        last_part = tokens.filter(DialogPart = 'b').last()
+        if last_part is not None:
+            time += last_part.End
+        return time, first_part.End / time
+
+    def get_part_a_duration(self):
+        tokens = self.wordtoken_set.filter(DialogPart = 'a').order_by('Begin')
+        try:
+            return tokens.last().End
+        except AttributeError:
+            print(self)
+            print(tokens.count())
+            raise(AttributeError)
+
+    def get_repeated_content_words(self,repetitions = 10):
+        ws = WordType.objects.filter(Label__regex = r'^[^{<]')
+        ws = ws.filter(wordtoken__Dialog=self).annotate(c = Count('wordtoken__id'))
+        ws = ws.filter(c__gte = repetitions)
+        return ws
+
+    def similarity_analysis(self):
+        ws = self.get_repeated_content_words()
+        for w in ws:
+            y = []
+            tokens = w.wordtoken_set.filter(Dialog=self)
+            for i in range(len(tokens)):
+                wt = tokens[i]
+                closest = None
+                best = 0
+                wt_path = fetch_temp_resource('buckeye-wt-%d.wav' % wt.pk)
+                if not os.path.isfile(wt_path):
+                    extract_vowel(wt.get_dialog_path(),wt.Begin,wt.End,wt_path)
+                if i == len(tokens)-1:
+                    break
+                for j in range(i+1,len(tokens)):
+                    wt2 = tokens[j]
+                    wt2_path = fetch_temp_resource('buckeye-wt-%d.wav' % wt2.pk)
+                    if not os.path.isfile(wt2_path):
+                        extract_vowel(wt2.get_dialog_path(),wt2.Begin,wt2.End,wt2_path)
+                    sim = envelope_similarity(wt_path,wt2_path)
+                    dist = -math.log(sim)
+                    y.append(dist)
+            return y
+
+
+
     def get_word_files(self):
         """
         Load the .words files associated with the dialog (most dialogs
         are multipart due to the size of their associated .wav files).
         """
         files = os.listdir(self.Speaker.get_path())
-        word_files = [f for f in files if f[:5] == str(d) and re.search("\.words$",f) is not None]
+        word_files = [f for f in files if f[:5] == str(self) and re.search("\.words$",f) is not None]
         return word_files
 
-    def load_in(self):
+    def load_wordtypes(self):
+        wf = self.get_word_files()
+        segs = SegmentType.objects.all()
+        segs = { x.Label: x for x in segs}
+        for f in wf:
+            name = re.sub(".words","",f)
+            print(name)
+            words = pickle.load(open(os.path.join(fetch_buckeye_resource('Processed'),name+'.txt'),'rb'))
+            for word in words:
+                wordTypes = WordType.objects.filter(Label=word['Word']).prefetch_related('underlying_set')
+                w = None
+                if len(wordTypes) != 0:
+                    for wType in wordTypes:
+                        if wType.is_word() and wType.get_UR() == word['UR']:
+                            w = wType
+                            break
+                        elif not wType.is_word():
+                            w = wType
+                if w is None:
+                    w = WordType.objects.create(Label=word['Word'],Count=0)
+                    if w.is_word():
+                        uls = []
+                        ur = word['UR'].split(";")
+                        for i in range(len(ur)):
+                            sType = segs[ur[i]]
+                            uls.append(Underlying(WordType=w,SegmentType=sType,Ordering=i))
+                        Underlying.objects.bulk_create(uls)
+
+    def validate_wordtokens(self):
+        wf = self.get_word_files()
+        wt = self.wordtoken_set.select_related('WordType','Category').prefetch_related('segmenttoken_set').all()
+        for f in wf:
+            name = re.sub(".words","",f)
+            part = name[-1]
+            print(name)
+            words = pickle.load(open(os.path.join(fetch_buckeye_resource('Processed'),name+'.txt'),'rb'))
+            pwt = wt.filter(DialogPart=part)
+            for i in range(len(pwt)):
+                if not pwt[i].WordType.is_word():
+                    continue
+                from_file = words[i]
+                not_good = False
+                if from_file['Word'] != pwt[i].WordType.Label:
+                    print(from_file)
+                    print(self)
+                    print('word label')
+                    print(pwt[i].WordType.Label)
+                    print(pwt[i].Begin)
+                    raise Exception
+                if from_file['Begin'] != pwt[i].Begin:
+                    print(from_file)
+                    print(self)
+                    print('begin')
+                    print(pwt[i].WordType.Label)
+                    print(pwt[i].Begin)
+                    raise Exception
+                if from_file['End'] != pwt[i].End:
+                    print(from_file)
+                    print(self)
+                    print('end')
+                    print(pwt[i].End)
+                    print(pwt[i].WordType.Label)
+                    print(pwt[i].Begin)
+                    raise Exception
+                if from_file['Category'] != pwt[i].Category.Label:
+                    print(from_file)
+                    print(self)
+                    print('category')
+                    print(pwt[i].Category.Label)
+                    print(pwt[i].WordType.Label)
+                    print(pwt[i].Begin)
+                    raise Exception
+                if pwt[i].WordType.is_word():
+                    if from_file['UR'] != pwt[i].WordType.get_UR():
+                        print(from_file)
+                        print(self)
+                        print('UR')
+                        print(pwt[i].WordType.get_UR(style='empty'))
+                        print(pwt[i].WordType.Label)
+                        print(pwt[i].Begin)
+                        raise Exception
+                    sts = [{'Label': x.SegmentType.Label, 'Begin':x.Begin,'End':x.End} for x in pwt[i].segmenttoken_set.all()]
+                    if from_file['Phones'] != sts:
+                        print(from_file)
+                        print(self)
+                        print('SR')
+                        print(sts)
+                        print(pwt[i].WordType.Label)
+                        print(pwt[i].Begin)
+                        raise Exception
+
+
+    def load_wordtokens(self):
         """
         Load in all information for a dialog from the Buckeye Corpus
         materials.
         """
         wf = self.get_word_files()
+        segs = SegmentType.objects.all()
+        segs = { x.Label: x for x in segs}
+        cats = Category.objects.all()
+        cats = { x.Label: x for x in cats}
+        if self.wordtoken_set.count() > 0:
+            return None
+        prev = None
         for f in wf:
             name = re.sub(".words","",f)
-            words = reorganize(self.Speaker.get_path(),name)
-            cat = Category.objects.get(Label=word['Category'])
-            wordTypes = WordType.objects.filter(Label=word['Word'])
-            ur = word['UR'].split(";")
-            w = None
-            if w is None and len(wordTypes) != 0:
-                for wType in wordTypes:
-                    if wType.is_word() and wType.get_UR() == word['UR']:
-                        w = wType
-                        break
-                    elif not wType.is_word():
-                        w = wType
-            if w is None:
-                w = WordType.objects.create(Label=word['Word'],Count=0)
+            print(name)
+            words = pickle.load(open(os.path.join(fetch_buckeye_resource('Processed'),name+'.txt'),'rb'))
+            for word in words:
+                cat = cats[word['Category']]
+                wordTypes = WordType.objects.filter(Label=word['Word']).prefetch_related('underlying_set')
+                if len(wordTypes) > 1:
+                    for wType in wordTypes:
+                        if wType.get_UR() == word['UR']:
+                            w = wType
+                            break
+                else:
+                    w = wordTypes[0]
+                wt =WordToken(Begin=word['Begin'],End=word['End'],WordType=w,Category=cat,Dialog=self,DialogPart=name[-1])
+                if prev is not None:
+                    wt.PreviousWord = prev
+                wt.save()
+                if prev is not None:
+                    prev.FollowingWord = wt
+                    prev.save()
                 if w.is_word():
-                    uls = []
-                    cv = ''
-                    for i in range(len(ur)):
-                        sType = SegmentType.objects.get(Label=ur[i])
-                        if sType.is_vowel():
-                            cv += 'V'
-                        else:
-                            cv += 'C'
-                        uls.append(Underlying(WordType=w,SegmentType=sType,Ordering=i))
-                    if cv == 'CVC':
-                        w.StressVowel = ur[1]
-                        uls[-2].Stressed = 1
-                    w.CVSkel = cv
-                    w.save()
-                    Underlying.objects.bulk_create(uls)
-            wt =WordToken.objects.create(Begin=word['Begin'],End=word['End'],WordType=w,Category=cat,Dialog=self,DialogPart=name[-1])
-            if w.is_word():
-                sts = []
-                for s in word['phonerange']:
-                    sType = SegmentType.objects.get(Label=s['Label'])
-                    sts.append(SegmentToken(WordToken=wt,SegmentType = sType,Begin=s['Begin'],End=s['End']))
-                SegmentToken.objects.bulk_create(sts)
+                    sts = []
+                    for s in word['Phones']:
+                        sType = segs[s['Label']]
+                        sts.append(SegmentToken(WordToken=wt,SegmentType = sType,Begin=s['Begin'],End=s['End']))
+                    SegmentToken.objects.bulk_create(sts)
+                prev = wt
 
 
 
@@ -360,6 +589,9 @@ class Underlying(models.Model):
 
     #objects = caching.base.CachingManager()
 
+    def __str__(self):
+        return str(self.SegmentType)
+
     def get_stress_trans(self):
         """
         Convert the transcription to include stress notation
@@ -385,13 +617,44 @@ class SegmentToken(models.Model):
     #objects = caching.base.CachingManager()
 
     def __str__(self):
-        return u'%s' % str(self.SegmentType)
+        return str(self.SegmentType)
 
     class Meta:
         ordering = ['Begin']
 
     def get_end(self):
         return self.End
+
+    def get_preceding_segment(self,word_internal=True):
+        if word_internal:
+            qs = self.WordToken.segmenttoken_set.select_related('WordToken','SegmentType').filter(Begin__lt = self.Begin).order_by('-Begin').first()
+            return qs
+        try:
+            qs = SegmentToken.objects.filter(
+                        WordToken__Dialog=self.WordToken.Dialog
+                        ).filter(WordToken__DialogPart=self.WordToken.DialogPart
+                        ).get(End = self.Begin)
+        except ObjectDoesNotExist:
+            qs = None
+        #except MultipleObjectsReturned:
+        #    qs = SegmentToken.objects.filter(End = self.Begin).first()
+        return qs
+
+    def get_following_segment(self,word_internal=True):
+        if word_internal:
+            qs = self.WordToken.segmenttoken_set.select_related('WordToken','SegmentType').filter(Begin__gt = self.Begin).first()
+            return qs
+        try:
+            qs = SegmentToken.objects.filter(
+                        WordToken__Dialog=self.WordToken.Dialog
+                        ).filter(WordToken__DialogPart=self.WordToken.DialogPart
+                        ).get(Begin = self.End)
+        except ObjectDoesNotExist:
+            qs = None
+        #except MultipleObjectsReturned:
+        #    qs = SegmentToken.objects.filter(Begin = self.End).first()
+        return qs
+
 
 class Category(models.Model):
     """
@@ -438,11 +701,8 @@ class PrevCondProbs(models.Model):
         """
         if self.Prob is not None:
             return self.Prob
-        qs = WordToken.objects.filter(WordType=self.ActWord)
-        self.Count = 0
-        for i in xrange(len(qs)):
-            if qs[i].get_previous_word().WordType == self.PreviousWord:
-                self.Count += 1
+        qs = WordToken.objects.select_related('WordType','PreviousWord').filter(WordType=self.ActWord)
+        self.Count = qs.filter(PreviousWord__WordType = self.PreviousWord).count()
         self.Prob = float(self.Count) / float(self.PreviousWord.get_count())
         self.save()
         return self.Prob
@@ -466,11 +726,8 @@ class FollCondProbs(models.Model):
         """
         if self.Prob is not None:
             return self.Prob
-        qs = WordToken.objects.filter(WordType=self.ActWord)
-        self.Count = 0
-        for i in xrange(len(qs)):
-            if qs[i].get_following_word().WordType == self.FollowingWord:
-                self.Count += 1
+        qs = WordToken.objects.select_related('WordType','FollowingWord').filter(WordType=self.ActWord)
+        self.Count = qs.filter(FollowingWord__WordType = self.FollowingWord).count()
         self.Prob = float(self.Count) / float(self.FollowingWord.get_count())
         self.save()
         return self.Prob
@@ -540,17 +797,28 @@ class WordType(models.Model):
         #    return False
         return True
 
-    def get_UR(self,stressed=False,blick_style=False):
+    def get_UR(self,stressed=False,style='buckeye'):
         """
         Get the underlying representation for a word type, can include
         stress information, and be modified to fit the style for BLICK
         (CMU dictionary).
         """
-        t = ' '.join([s.get_stress_trans() for s in self.underlying_set.all()])
+
+        if style == 'blick':
+            t = ' '.join([s.get_stress_trans() for s in self.underlying_set.all()])
+            t = re.sub(r'EL(\d?)',r'AH\1 L',t)
+            t = re.sub(r'EN(\d?)',r'AH\1 N',t)
+            t = re.sub(r'EM(\d?)',r'AH\1 M',t)
+            t = re.sub(r'ENG(\d?)',r'AH\1 NG',t)
+            t = re.sub(r'([IEAUO][WYOHAE])N(\d?)',r'\1\2 N',t)
+        elif style == 'buckeye':
+            t = ';'.join([s.get_stress_trans() for s in self.underlying_set.all()])
+            t = t.lower()
+        elif style == 'empty':
+            stressed = False
+            t = ' '.join([s.get_stress_trans() for s in self.underlying_set.all()])
         if not stressed:
             t = re.sub(r'\d',r'',t)
-        if blick_style:
-            t = re.sub(r'EL(\d?)',r'AH\1 L',t)
         return t
 
     def get_base_duration(self):
@@ -566,8 +834,13 @@ class WordType(models.Model):
         necessary.
         """
         if self.StressVowel is None:
-            self.figureStresses()
+            self.figure_stresses()
         return self.StressVowel
+
+    def has_stress(self):
+        if self.StressVowel is not None:
+            return True
+        return False
 
     def figure_stresses(self):
         """
@@ -578,7 +851,7 @@ class WordType(models.Model):
         in its dictionary and returns that if found, otherwise finds the
         transcription that has the lowest violation of its constraints.
         """
-        guessed = guessStress(self.get_UR(blick_style=True))
+        guessed = guessStress(self.get_UR(style='blick'))
         stresses = re.sub(r'\D',r'',guessed)
         syls = self.underlying_set.filter(SegmentType__Syllabic=True)
         for i in range(len(syls)):
@@ -597,8 +870,8 @@ class WordType(models.Model):
         if self.CVSkel is not None:
             return self.CVSkel
         cv = ''
-        for seg in self.UR.all():
-            if seg.is_vowel():
+        for seg in self.underlying_set.all():
+            if seg.SegmentType.is_vowel():
                 cv += 'V'
             else:
                 cv += 'C'
@@ -610,7 +883,7 @@ class WordType(models.Model):
         """
         Calculate the number of syllables in the word.
         """
-        return sum([x.is_syllabic() for x in self.UR.all()])
+        return sum([x.is_syllabic() for x in self.underlying_set.all()])
 
     def is_word(self):
         """
@@ -650,7 +923,7 @@ class WordType(models.Model):
 
     def get_neighbours(self):
         any_segment = '[A-Za-z]{1,2}'
-        phones = map(str,self.UR.all())
+        phones = list(map(str,self.underlying_set.all()))
         patterns = []
         for i in range(len(phones)):
             patt = phones[:i] #Substitutions
@@ -766,6 +1039,8 @@ class WordToken(models.Model):
     AcousticInformation = PickledObjectField(null=True)
     SemanticInformation = PickledObjectField(null=True)
     CachedOutput = PickledObjectField(null=True)
+    PreviousWord = models.ForeignKey('self',related_name = 'previous',blank=True,null=True)
+    FollowingWord = models.ForeignKey('self',related_name = 'following',blank=True,null=True)
 
     #objects = caching.base.CachingManager()
 
@@ -774,6 +1049,19 @@ class WordToken(models.Model):
 
     def __str__(self):
         return u'%s' % str(self.WordType)
+
+    def get_envelope(self):
+        #if self.AcousticInformation is None:
+        #    self.AcousticInformation = {}
+        #if 'Envelope' in self.AcousticInformation:
+        #    return self.AcousticInformation['Envelope']
+        path = fetch_temp_resource('buckeye-wt-%d.wav' % self.pk)
+        if not os.path.isfile(path):
+            extract_vowel(self.get_dialog_path(),self.Begin,self.End,path)
+        env = calc_envelope(path,num_bands=8)
+        #self.AcousticInformation['Envelope'] = env
+        #self.save()
+        return env #self.AcousticInformation['Envelope']
 
     def get_sense(self,disambiguate=True):
         if not disambiguate:
@@ -845,28 +1133,29 @@ class WordToken(models.Model):
                                 speaker_means=None,speaker_covs = None):
         if self.AcousticInformation is None:
             self.AcousticInformation = {}
-        elif style == 'fave':
+        if style == 'fave':
             #extract stress vowel wave
-            temp_filename = fetch_temp_filename('%d-temp.wav' % self.id)
+            temp_filename = fetch_temp_resource('%d-temp.wav' % self.id)
             vowel, foll_seg, prec_seg, begin, end = self.get_stressed_vowel_info()
+            if vowel is None:
+                return None
+            vdur = end - begin
+            if vdur < 0.05:
+                return None
+            self.AcousticInformation['VDur'] = vdur
             dialog_file = self.get_dialog_path()
             extract_vowel(dialog_file,begin,end,temp_filename)
+
             formants = analyze_vowel(temp_filename, vowel = vowel,
-                                            measurement = 'mahalanobis',
+                                            method = 'mahalanobis',
                                             prec_seg = prec_seg, foll_seg = foll_seg,
                                             speaker_gender = self.Dialog.Speaker.Gender,
                                             means = speaker_means, covs = speaker_covs)
             os.remove(temp_filename)
-            self.AcousticInformation['F1'],
-            self.AcousticInformation['F2'],
-            self.AcousticInformation['B1'],
-            self.AcousticInformation['B2'] = formants.get_point_measurement()
-            self.AcousticInformation['F1C1'],
-            self.AcousticInformation['F1C2'],
-            self.AcousticInformation['F1C3'] = formants.get_DCT('F1')
-            self.AcousticInformation['F2C1'],
-            self.AcousticInformation['F2C2'],
-            self.AcousticInformation['F2C3'] = formants.get_DCT('F2')
+            self.AcousticInformation.update(formants.get_point_measurement(keys=['F1','F2','F3','B1','B2','B3'],return_dict=True))
+            self.AcousticInformation.update(formants.get_DCT('F1',return_dict=True))
+            self.AcousticInformation.update(formants.get_DCT('F2',return_dict=True))
+            self.AcousticInformation.update(formants.get_DCT('F3',return_dict=True))
             self.save()
 
         #else:
@@ -892,37 +1181,80 @@ class WordToken(models.Model):
         return False
 
 
-    def get_SR(self):
-        return ".".join([str(s) for s in self.SR.all()])
+    def get_SR(self,style = 'empty'):
+        if style == 'empty':
+            t = " ".join([str(s) for s in self.segmenttoken_set.all()])
+        elif style == 'buckeye':
+            t = ";".join([str(s) for s in self.segmenttoken_set.all()])
+        return t
 
-    def get_stressed_vowel_info(self):
+    def get_stressed_vowel_info(self,no_hiatus=False,word_internal=False):
         if self.has_stress():
             qs = self.segmenttoken_set.get(Stressed=True)
-            try:
-                foll_seg = SegmentToken.objects.get(Begin=qs.End)
-                foll_seg = str(foll_seg.SegmentType)
-            except ObjectDoesNotExist:
+            beg = qs.Begin
+            end = qs.End
+            vow = str(qs)
+            fqs = qs.get_following_segment(word_internal=word_internal)
+            if fqs is None:
                 foll_seg = ''
-            try:
-                prec_seg = SegmentToken.objects.get(End = qs.Begin)
-            except ObjectDoesNotExist:
+            #    return None, None, None, None, None
+            else:
+                foll_seg = str(fqs)
+            pqs = qs.get_preceding_segment(word_internal=word_internal)
+            if pqs is None:
                 prec_seg = ''
-            return str(qs),str(foll_seg),str(prec_seg),qs.Begin,qs.End
+            #    return None, None, None, None, None
+            else:
+                prec_seg = str(pqs)
+            #print(self)
+            #print(vow,foll_seg,prec_seg)
+            #Fix rhotics
+            if vow == 'r' and pqs is not None and pqs.SegmentType.is_vowel() \
+                        and pqs.WordToken == qs.WordToken:
+                foll_seg = vow
+                vow = prec_seg
+                beg = pqs.Begin
+                end = pqs.End
+                qs = pqs
+                pqs = pqs.get_preceding_segment()
+                if pqs is None:
+                    prec_seg = ''
+                else:
+                    prec_seg = str(pqs)
+
+            elif vow == 'r' and (pqs is None or not pqs.SegmentType.is_vowel()) \
+                        and (fqs is None or not fqs.SegmentType.is_vowel()):
+                vow = 'er'
+            #print(vow,foll_seg,prec_seg)
+            if not qs.SegmentType.is_vowel():
+                return None, None, None, None, None
+            if no_hiatus:
+                if fqs is None or fqs.SegmentType.is_vowel():
+                    return None, None, None, None, None
+                if pqs is None or pqs.SegmentType.is_vowel():
+                    return None, None, None, None, None
+            return vow,foll_seg,prec_seg,beg,end
+        if not self.WordType.has_stress():
+            self.WordType.figure_stresses()
         ur = self.WordType.underlying_set.all()
         sr = self.segmenttoken_set.all()
         score,mapping = minEditDist(map(str,[x.SegmentType for x in ur]),map(str,[x.SegmentType for x in sr]),distOnly=False)
+        #print(ur)
+        #print(sr)
+        #print(mapping)
         ui = 0
         sj = 0
         for m in mapping:
-            if m[0] == str(ur[ui]):
+            if ui < len(ur)-1 and m[0] == str(ur[ui]):
                 if m[1] != '.' and ur[ui].Stressed == 1:
 
                     sr[sj].Stressed = True
                     sr[sj].save()
                 ui += 1
-            if m[1] == str(sr[sj]):
+            if sj < len(sr)-1 and m[1] == str(sr[sj]):
                 sj += 1
-
+        if not self.has_stress():
+            return None, None,None,None,None
         return self.get_stressed_vowel_info()
 
     def get_dialog_path(self):
@@ -930,59 +1262,65 @@ class WordToken(models.Model):
         return path
 
     def get_previous_word(self):
-        if self.DialogPart == 'b' and self.Begin == 0.0:
-            prev = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(DialogPart='a').order_by('-Begin')
-        else:
-            prev = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(pk=self.pk-1)
-        if len(prev) > 0:
-            return prev[0]
-        return None
+        return self.PreviousWord
+        #if self.DialogPart == 'b' and self.Begin == 0.0:
+            #prev = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(DialogPart='a').order_by('-Begin')
+        #else:
+            #prev = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(End__lt=self.End).order_by('-Begin')
+        #t = prev.first()
+        #if t is not None and t.Category.Label == 'SIL' and t.get_duration() < 0.5:
+            #return prev[1]
+        #return t
 
     def get_following_word(self):
-        foll = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(pk=self.pk+1)
-        if self.DialogPart == 'a' and len(foll) == 0:
-            foll = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(DialogPart='b').filter(Begin__exact=0.0)
-        if len(foll) > 0:
-            return foll[0]
-        return None
+        return self.FollowingWord
+        #foll = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(Begin__gt=self.Begin)
+        #if self.DialogPart == 'a' and len(foll) == 0:
+            #foll = WordToken.objects.select_related('Category','WordType').filter(Dialog=self.Dialog).filter(DialogPart='b').filter(Begin__exact=0.0)
+        #t = foll.first()
+        #if t is not None and t.Category.Label == 'SIL' and t.get_duration() < 0.5:
+            #return foll[1]
+        #return t
 
     def get_previous_context(self,window='auto'):
         if window == 'auto':
             window_max = 10
         else:
             window_max = window
-        context = []
-        prev = self.get_previous_word()
-        durSum = prev.get_duration()
-        while durSum <= window_max:
-            if prev is None:
-                break
-            if prev.WordType.is_word():
-                context.append(prev)
-            durSum += prev.get_duration()
-            if window == 'auto' and prev.after_pause():
-                break
-            prev = prev.get_previous_word()
-        return reversed(context)
+        min_val = self.Begin-window_max
+        context = WordToken.objects.select_related('Category','WordType')
+        context = context.filter(Dialog=self.Dialog).filter(DialogPart=self.DialogPart)
+        context = context.filter(End__lt=self.End)
+        context = context.filter(Begin__gte = min_val).order_by('-Begin')
+        prev_context = []
+        for w in context:
+            if not w.WordType.is_word():
+                if w.Category.CategoryType == 'Pause' and w.get_duration() < 0.5:
+                    continue
+                else:
+                    break
+            prev_context.append(w)
+        return list(reversed(prev_context))
 
     def get_following_context(self,window='auto'):
         if window == 'auto':
             window_max = 10
         else:
             window_max = window
-        context = []
-        foll = self.get_following_word()
-        durSum = foll.get_duration()
-        while durSum <= window_max:
-            if foll is None:
-                break
-            if foll.WordType.is_word():
-                context.append(foll)
-            durSum += foll.get_duration()
-            if window == 'auto' and foll.before_pause():
-                break
-            foll = foll.get_following_word()
-        return context
+        min_val = self.Begin+window_max
+        context = WordToken.objects.select_related('Category','WordType')
+        context = context.filter(Dialog=self.Dialog).filter(DialogPart=self.DialogPart)
+        context = context.filter(End__gt=self.End)
+        context = context.filter(Begin__lte = min_val).order_by('Begin')
+        foll_context = []
+        for w in context:
+            if not w.WordType.is_word():
+                if w.Category.CategoryType == 'Pause' and w.get_duration() < 0.5:
+                    continue
+                else:
+                    break
+            foll_context.append(w)
+        return foll_context
 
     def get_recent_repetition(self):
         cont = set(map(str,self.get_previous_context()))
@@ -999,10 +1337,8 @@ class WordToken(models.Model):
     def get_dialog_place(self):
         diagPlace = self.Begin
         if self.DialogPart == 'b':
-            aDiag = WordToken.objects.filter(Dialog=self.Dialog).filter(DialogPart='a').order_by('-Begin')
-            if len(aDiag) > 0:
-                lengthOfA = aDiag[0].End
-                diagPlace += lengthOfA
+            lengthOfA = self.Dialog.get_part_a_duration()
+            diagPlace += lengthOfA
         return diagPlace
 
     def get_syllable_count(self):
@@ -1012,26 +1348,28 @@ class WordToken(models.Model):
         return self.End - self.Begin
 
     def after_pause(self):
-        if self.get_previous_word() is None:
+        prev = self.get_previous_word()
+        if prev is None:
             return True
-        if self.get_previous_word().Category.CategoryType == "Disfluency":
+        if prev.Category.CategoryType == "Disfluency":
             return True
-        if self.get_previous_word().Category.CategoryType == "Other":
+        if prev.Category.CategoryType == "Other":
             return True
-        if self.get_previous_word().Category.CategoryType == "Pause":
-            if self.get_previous_word().get_duration() >= 0.5:
+        if prev.Category.CategoryType == "Pause":
+            if prev.get_duration() >= 0.5:
                 return True
         return False
 
     def before_pause(self):
-        if self.get_following_word() is None:
+        foll = self.get_following_word()
+        if foll is None:
             return True
-        if self.get_following_word().Category.CategoryType == "Disfluency":
+        if foll.Category.CategoryType == "Disfluency":
             return True
-        if self.get_following_word().Category.CategoryType == "Other":
+        if foll.Category.CategoryType == "Other":
             return True
-        if self.get_following_word().Category.CategoryType == "Pause":
-            if self.get_following_word().get_duration() >= 0.5:
+        if foll.Category.CategoryType == "Pause":
+            if foll.get_duration() >= 0.5:
                 return True
         return False
 
@@ -1074,8 +1412,6 @@ class WordToken(models.Model):
 
     def get_previous_cond_prob(self):
         if self.after_pause():
-            return 0.0
-        if not self.get_previous_word().WordType.is_word():
             return 0.0
         prev = self.get_previous_word()
         pc = PrevCondProbs.objects.get_or_create(ActWord=self.WordType,PreviousWord=prev.WordType)[0]
@@ -1307,14 +1643,14 @@ class WordToken(models.Model):
         if form['additional_phono_stats']:
             if 'PhonoStatsNeighDen' not in outline:
                 outline['PhonoStatsNeighDen'] = getNeighCount(self.WordType.get_UR(
-                                                        stressed=True,blick_style=True),no_stress=True)
+                                                        stressed=True,style='blick'),no_stress=True)
             if 'PhonoStatsBlickPhono' not in outline:
                 outline['PhonoStatsBlickPhono'] = getPhonotacticProb(self.WordType.get_UR(
-                                                        stressed=True,blick_style=True),
+                                                        stressed=True,style='blick'),
                                                         use_blick=True,no_stress=True)
             if 'PhonoStatsSPhoneProb' not in outline:
                 outline['PhonoStatsSPhoneProb'],outline['PhonoStatsBiPhoneProb'] = getPhonotacticProb(self.WordType.get_UR(
-                                                        stressed=True,blick_style=True),use_blick=False,no_stress=True)
+                                                        stressed=True,style='blick'),use_blick=False,no_stress=True)
 
         for w in eval(form['sem_pred_window']):
             for s in eval(form['sem_pred_style']):

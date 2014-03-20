@@ -15,6 +15,10 @@ def fetch_media_resource(uri):
     path = os.path.join(settings.MEDIA_ROOT,uri)
     return path
 
+def fetch_temp_resource(uri):
+    path = os.path.join(settings.TEMP_DIR,uri)
+    return path
+
 def loadFile(path,cols=None):
     head = None
     with open(path,'r') as f:
@@ -29,10 +33,10 @@ def loadFile(path,cols=None):
     return lines
 
 def getphonerange(phones,begin,end):
-    begin = begin-0.100
-    end = end+0.100
+    begin = begin-0.01
+    end = end+0.01
     phonerange = []
-    for i in xrange(len(phones)):
+    for i in range(len(phones)):
         if phones[i]['Begin'] < begin:
             continue
         elif phones[i]['End'] > end:
@@ -40,23 +44,23 @@ def getphonerange(phones,begin,end):
         phonerange.append(phones[i])
     return phonerange
 
-def loadPhones(path):
+def load_phones(path):
     with open(path,'r') as file_handle:
-        f = re.split("#\r{0,1}\n",file_handle)[1]
+        f = re.split("#\r{0,1}\n",file_handle.read())[1]
         flist = f.splitlines()
         phones =[]
         begin = 0.0
         for l in flist:
             line = re.split("\s+\d{3}\s+",l.strip())
-            if line[1].islower():
-                end = float(phonlist[i][0])
-                phones.append({'Label':phonlist[i][1],'Begin':begin,'End':end})
+            end = float(line[0])
+            label = re.split(" {0,1};| {0,1}\+",line[1])[0]
+            phones.append({'Label':label,'Begin':begin,'End':end})
             begin = end
     return phones
 
-def loadWords(path):
+def load_words(path):
     with open(path,'r') as file_handle:
-        f = re.split("#\r{0,1}\n",file_handle)[1]
+        f = re.split(r"#\r{0,1}\n",file_handle.read())[1]
         words = []
         begin = 0.0
         flist = f.splitlines()
@@ -98,11 +102,11 @@ def reorganize(path,name):
             phonerange = getphonerange(phones,word['Begin'],word['End'])
             phonlist = word['SR'].split(";")
             justphones = []
-            for j in xrange(len(phonerange)):
+            for j in range(len(phonerange)):
                 phonerange[j]['Label'] = re.split(" {0,1};| {0,1}\+",phonerange[j]['Label'])[0]
                 justphones.append(phonerange[j]['Label'])
             if len(phonerange) > len(phonlist):
-                for i in xrange(len(phonerange)-len(phonlist)+1):
+                for i in range(len(phonerange)-len(phonlist)+1):
                     if justphones[i:i+len(phonlist)] == phonlist:
                         start = i
                         break
@@ -112,6 +116,35 @@ def reorganize(path,name):
             word['phonerange'] = phonerange
     return words
 
+
+def reorganize2(path,name):
+    words = load_words(os.path.join(path,name+'.words'))
+    phones = load_phones(os.path.join(path,name+".phones"))
+    for word in words:
+        if word['UR'] != 'NULL':
+            sr = word['SR'].split(";")
+            phonerange = []
+            while phones[0]['Begin'] < word['Begin']:
+                t = phones.pop(0)
+            for s in sr:
+                if phones[0]['Label'] == s:
+                    phonerange.append(phones.pop(0))
+                else:
+                    print('Error!')
+                    print(word)
+                    print(phones[0])
+                    raise(Exception)
+
+def get_expected_phones(words):
+    phones = []
+    for word in words:
+        if word['UR'] != 'NULL':
+            sr = word['SR'].split(';')
+            phones.extend(sr)
+        else:
+            phones.append(word['Word'])
+    return phones
+
 mysql_ur_string_lookup = """(SELECT GROUP_CONCAT(buckeyebrowser_segmenttype.Label SEPARATOR ' ')
                                 FROM buckeyebrowser_underlying
                                 INNER JOIN buckeyebrowser_segmenttype
@@ -120,16 +153,17 @@ mysql_ur_string_lookup = """(SELECT GROUP_CONCAT(buckeyebrowser_segmenttype.Labe
                                 WHERE buckeyebrowser_underlying.WordType_id
                                     =buckeyebrowser_wordtype.id) REGEXP %s"""
 
-pg_ur_string_lookup = """array_to_string
-                                        (
-                                        ARRAY (
-                                                SELECT st."Label"
-                                                FROM buckeyebrowser_underlying ur, buckeyebrowser_segmenttype st
-                                                WHERE st.id = ur."SegmentType_id"
-                                                AND ur."WordType_id" = buckeyebrowser_wordtype.id
-                                                ),
-                                        ' '
-                                        ) ~ %s"""
+pg_ur_string_lookup = """
+array_to_string(
+ARRAY (
+        SELECT st."Label"
+        FROM buckeyebrowser_underlying ur, buckeyebrowser_segmenttype st
+        WHERE st.id = ur."SegmentType_id"
+        AND ur."WordType_id" = buckeyebrowser_wordtype.id
+        ORDER BY ur."Ordering"
+        ),
+' '
+) ~ %s"""
 
 pg_speaker_center = """Select avg(AvgF1), avg(AvgF2) FROM (SELECT "StressVowel" as Vowel,
                         avg("StrVowelF1") as AvgF1,
